@@ -32,3 +32,32 @@ export async function saveState(state) {
   const { error } = await supabase.from("app_state").upsert({ id: "main", data: payload, updated_at: new Date().toISOString() });
   if (error) throw error;
 }
+
+// ─── ฟอร์มสมัคร (เด็กกรอกเอง) ────────────────────────────────
+const LS_REG = "twt-registrations";
+export async function submitRegistration(form) {
+  const row = { nick: form.nick, first: form.first, last: form.last, phone: form.phone, line: form.line, fb: form.fb, ig: form.ig, note: form.note || "" };
+  if (!supabase) {
+    const list = JSON.parse(localStorage.getItem(LS_REG) || "[]");
+    list.push({ ...row, id: Date.now(), created_at: new Date().toISOString(), imported: false });
+    localStorage.setItem(LS_REG, JSON.stringify(list));
+    return;
+  }
+  const { error } = await supabase.from("registrations").insert(row);
+  if (error) throw error;
+}
+export async function loadRegistrations() {
+  if (!supabase) return JSON.parse(localStorage.getItem(LS_REG) || "[]").filter((r) => !r.imported);
+  const { data, error } = await supabase.from("registrations").select("*").eq("imported", false).order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+export async function removeRegistration(id) {
+  if (!supabase) {
+    const list = JSON.parse(localStorage.getItem(LS_REG) || "[]").filter((r) => r.id !== id);
+    localStorage.setItem(LS_REG, JSON.stringify(list));
+    return;
+  }
+  const { error } = await supabase.from("registrations").delete().eq("id", id);
+  if (error) throw error;
+}

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { loadState, saveState, mode } from "./storage.js";
+import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration } from "./storage.js";
 import {
   Volume2, SlidersVertical, Phone, MessageCircle, Facebook, Instagram,
   CalendarDays, Users, Wallet, Link2, ChevronRight, X, Award, Copy, Check, Lock, Cloud, CloudOff,
@@ -78,6 +78,65 @@ function Logo({ size = 22 }) {
 const PIN = import.meta.env.VITE_ADMIN_PIN || "";
 
 export default function App() {
+  if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/join") return <JoinPage />;
+  return <AdminApp />;
+}
+
+// ─── หน้าสมัครสำหรับเด็ก (ไม่ต้องใส่ PIN) ─────────────────────────
+function JoinPage() {
+  const [f, setF] = useState({ nick: "", first: "", last: "", phone: "", line: "", fb: "", ig: "", note: "" });
+  const [state, setState] = useState("idle"); // idle | sending | done | error
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const submit = async () => {
+    if (!f.nick.trim() || !f.phone.trim()) { setState("missing"); return; }
+    setState("sending");
+    try { await submitRegistration(f); setState("done"); } catch (e) { console.error(e); setState("error"); }
+  };
+  const inp = (k, label, ph, extra = {}) => (
+    <label className="block">
+      <div className="mb-1 text-xs font-medium text-slate-600">{label}</div>
+      <input value={f[k]} onChange={set(k)} placeholder={ph} className="w-full rounded-lg px-3 py-2 text-sm" style={{ ...font, border: "1px solid #D7E0F3", background: "#FAFBFF" }} {...extra} />
+    </label>
+  );
+  return (
+    <div className="min-h-screen" style={{ ...font, background: BLUE, color: INK }}>
+      <div className="mx-auto max-w-md px-4 py-6">
+        <div className="text-white"><Logo size={18} /></div>
+        <div className="mt-4 overflow-hidden rounded-3xl bg-white">
+          <div className="px-5 pt-5 text-white" style={{ background: BLUE }}>
+            <div className="text-lg font-bold">ยินดีต้อนรับ 🎧</div>
+            <div className="pb-5 text-sm text-white/80">กรอกข้อมูลนิดหน่อยแล้วเจอกันในคลาสครับ</div>
+          </div>
+          {state === "done" ? (
+            <div className="p-6 text-center">
+              <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full" style={{ background: "#E6F6EA", color: "#1B7A3A" }}><Check size={28} /></div>
+              <div className="text-lg font-bold">ส่งข้อมูลเรียบร้อย</div>
+              <div className="mt-1 text-sm text-slate-500">ขอบคุณครับ {f.nick} เดี๋ยวทางโรงเรียนจะติดต่อกลับเพื่อนัดวันเวลาเรียน</div>
+            </div>
+          ) : (
+            <div className="space-y-3 p-5">
+              {inp("nick", "ชื่อเล่น *", "เช่น ซี")}
+              <div className="grid grid-cols-2 gap-2">{inp("first", "ชื่อจริง", "")}{inp("last", "นามสกุล", "")}</div>
+              {inp("phone", "เบอร์โทร *", "08x-xxx-xxxx", { inputMode: "tel" })}
+              {inp("line", "LINE ID", "")}
+              {inp("fb", "Facebook", "ชื่อหรือลิงก์")}
+              {inp("ig", "Instagram", "@")}
+              {inp("note", "อยากเรียนอะไร / วันเวลาที่สะดวก", "เช่น ทำเพลง เสาร์บ่าย")}
+              {state === "missing" && <div className="text-xs" style={{ color: "#B42318" }}>กรอกชื่อเล่นและเบอร์โทรด้วยนะครับ</div>}
+              {state === "error" && <div className="text-xs" style={{ color: "#B42318" }}>ส่งไม่สำเร็จ ลองใหม่อีกครั้ง หรือทักไลน์โรงเรียนได้เลยครับ</div>}
+              <button onClick={submit} disabled={state === "sending"} className="mt-1 w-full rounded-xl py-3 font-semibold text-white disabled:opacity-60" style={{ background: BLUE }}>
+                {state === "sending" ? "กำลังส่ง…" : "ส่งข้อมูล"}
+              </button>
+            </div>
+          )}
+        </div>
+        <div className="mt-4 text-center text-xs text-white/70">Today What Todo · Sound With Today</div>
+      </div>
+    </div>
+  );
+}
+
+function AdminApp() {
   const [ok, setOk] = useState(() => !PIN || sessionStorage.getItem("twt-ok") === "1");
   const [pin, setPin] = useState("");
   const [err, setErr] = useState(false);
@@ -193,21 +252,6 @@ function Dashboard({ initial, loadErr }) {
     say(`จัดคาบ ${course} ให้แล้ว ${count} คาบ เริ่ม ${thDate(start)} ${time} น.`);
   };
 
-  // เด็กที่ยังไม่มีคาบล่วงหน้า แต่ยังถือว่าเรียนอยู่ (ซื้อคอร์ส/เรียนล่าสุดภายใน 3 เดือน)
-  const needSchedule = useMemo(() => {
-    const cutoff = new Date(today); cutoff.setMonth(cutoff.getMonth() - 3);
-    const cutoffStr = toInput(cutoff);
-    return students.filter((st) => {
-      const own = sessions.filter((x) => x.studentId === st.id);
-      if (own.some((x) => !x.done && x.at >= today)) return false;
-      const doneList = own.filter((x) => x.done);
-      const lastDone = doneList.length ? new Date(Math.max(...doneList.map((x) => x.at))) : null;
-      const recentBuy = st.purchases?.some((b) => b.date >= cutoffStr);
-      const recentBuyUnfinished = st.purchases?.some((b) => b.date >= cutoffStr && own.filter((x) => x.course === b.course && x.done).length < (b.total || 0));
-      return recentBuyUnfinished || (lastDone && lastDone >= cutoff && own.some((x) => !x.done));
-    });
-  }, [students, sessions]);
-
   const showStudentSchedule = (id) => {
     const own = sessions.filter((x) => x.studentId === id).sort((a, b) => a.at - b.at);
     const next = own.find((x) => !x.done && x.at >= today) || own.at(-1);
@@ -244,6 +288,22 @@ function Dashboard({ initial, loadErr }) {
     });
     return m;
   }, [students, sessions, rule]);
+  // เด็กที่ยังไม่มีคาบล่วงหน้า แต่ยังถือว่าเรียนอยู่ (ซื้อคอร์ส/เรียนล่าสุดภายใน 3 เดือน)
+  const needSchedule = useMemo(() => {
+    const cutoff = new Date(today); cutoff.setMonth(cutoff.getMonth() - 3);
+    const cutoffStr = toInput(cutoff);
+    return students.filter((st) => {
+      if (st.forced || pool.get(st.id)?.forfeited.length > 0) return false; // ยกเข้าส่วนกลางแล้ว = ไม่ต้องจัดคาบ
+      const own = sessions.filter((x) => x.studentId === st.id);
+      if (own.some((x) => !x.done && x.at >= today)) return false;
+      const doneList = own.filter((x) => x.done);
+      const lastDone = doneList.length ? new Date(Math.max(...doneList.map((x) => x.at))) : null;
+      const recentBuy = st.purchases?.some((b) => b.date >= cutoffStr);
+      const recentBuyUnfinished = st.purchases?.some((b) => b.date >= cutoffStr && own.filter((x) => x.course === b.course && x.done).length < (b.total || 0));
+      return recentBuyUnfinished || (lastDone && lastDone >= cutoff && own.some((x) => !x.done));
+    });
+  }, [students, sessions, pool]);
+
   const forfeitedIds = useMemo(() => new Set([...pool.values()].flatMap((v) => v.forfeited.map((x) => x.id))), [pool]);
   const setFlag = (id, patch) => setStudents((all) => all.map((x) => (x.id === id ? { ...x, ...patch } : x)));
 
@@ -275,6 +335,16 @@ function Dashboard({ initial, loadErr }) {
     say("เปลี่ยนวัน/เวลาแล้ว");
   };
 
+  const deleteSession = (sessionId) => { setSessions((all) => all.filter((x) => x.id !== sessionId)); say("ลบคาบแล้ว"); };
+  const deleteRemaining = (id, course) => {
+    const n = sessions.filter((x) => x.studentId === id && x.course === course && !x.done).length;
+    setSessions((all) => all.filter((x) => !(x.studentId === id && x.course === course && !x.done)));
+    say(`ลบคาบที่ยังไม่เรียนของ ${course} แล้ว ${n} คาบ`);
+  };
+  const deletePurchase = (id, index) => {
+    setStudents((all) => all.map((x) => (x.id === id ? { ...x, purchases: x.purchases.filter((_, i) => i !== index) } : x)));
+    say("ลบรายการซื้อคอร์สแล้ว");
+  };
   const markDone = (sessionId) =>
     setSessions((all) => all.map((s) => (s.id === sessionId ? { ...s, done: !s.done } : s)));
 
@@ -346,7 +416,7 @@ function Dashboard({ initial, loadErr }) {
         )}
 
         {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} />}
-        {tab === "form" && <FormPreview say={say} />}
+        {tab === "form" && <FormPreview say={say} onImport={(r) => addStudent(r)} />}
       </main>
 
       {student && (
@@ -355,6 +425,7 @@ function Dashboard({ initial, loadErr }) {
           needsSchedule={needSchedule.some((x) => x.id === student.id)} schedOpen={schedOpen} setSchedOpen={setSchedOpen}
           onSchedule={(form) => scheduleCourse(student.id, form)}
           onTeacher={setSessionTeacher} onShowSchedule={() => showStudentSchedule(student.id)}
+          onDeleteSession={deleteSession} onDeleteRemaining={(c) => deleteRemaining(student.id, c)} onDeletePurchase={(i) => deletePurchase(student.id, i)}
           onExempt={() => { setFlag(student.id, { exempt: !student.exempt, forced: false }); say(student.exempt ? "กลับมาใช้กติกาส่วนกลางตามปกติ" : "คืนคาบให้แล้ว ไม่หักเข้าส่วนกลาง"); }}
           onForce={() => { setFlag(student.id, { forced: !student.forced, exempt: false }); say(student.forced ? "ยกเลิกการยกเข้าส่วนกลาง" : "ยกคาบที่เหลือเข้าส่วนกลางแล้ว"); }}
           onClose={() => { setOpen(null); setSchedOpen(false); }}
@@ -555,7 +626,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
 }
 
 // ─── โปรไฟล์นักเรียน ────────────────────────────────────────────
-function Profile({ student, sessions, info, rule, courses, teachers, onRemove, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew }) {
+function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew }) {
   const [renewOpen, setRenewOpen] = useState(false);
   const [disc, setDisc] = useState(0);
   const [pickDate, setPickDate] = useState(null);
@@ -732,12 +803,19 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, n
                   <div key={i} className="flex items-center px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
                     <div className="flex-1"><span className="font-medium">{b.course}</span><span className="text-slate-500"> · {b.date} · {b.teacher} · {b.total} คาบ{b.time ? ` · ${b.time}` : ""}{b.discount ? ` · ลด ${b.discount}%` : ""}</span></div>
                     <div className="font-semibold">{b.price ? baht(b.price) : "-"}</div>
+                    <button onClick={() => onDeletePurchase(i)} className="ml-2 text-slate-300 hover:text-red-600" title="ลบรายการซื้อนี้"><X size={14} /></button>
                   </div>
                 ))}
               </div>
             </>
           )}
-          <h3 className="mb-1 mt-3 text-xs font-semibold text-slate-600">ประวัติคาบเรียน · {cur || "ทุกคอร์ส"} ({inCourse.length} คาบ)</h3>
+          <div className="mb-1 mt-3 flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-slate-600">ประวัติคาบเรียน · {cur || "ทุกคอร์ส"} ({inCourse.length} คาบ)</h3>
+            {inCourse.some((x) => !x.done) && (
+              <button onClick={() => { if (window.confirm(`ลบคาบที่ยังไม่เรียนของ ${cur} ทั้งหมด ${inCourse.filter((x) => !x.done).length} คาบ?`)) onDeleteRemaining(cur); }}
+                className="text-xs" style={{ color: "#B42318" }}>ลบคาบที่ยังไม่เรียนทั้งหมด</button>
+            )}
+          </div>
           <div className="overflow-hidden rounded-xl" style={{ border: "1px solid #D7E0F3" }}>
             {inCourse.map((s, i) => (
               <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
@@ -761,6 +839,7 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, n
                   <button onClick={() => { setNewDate(toInput(s.at)); setNewTime(`${String(s.at.getHours()).padStart(2, "0")}:${s.at.getMinutes() < 30 ? "00" : "30"}`); setPickDate(s.id); window.scrollTo?.(0, 0); }}
                     className="shrink-0 rounded px-1.5 py-0 text-xs" style={{ background: BLUE_SOFT, color: BLUE }}>เลื่อน</button>
                 )}
+                {!s.done && <button onClick={() => onDeleteSession(s.id)} className="shrink-0 text-slate-300 hover:text-red-600" title="ลบคาบนี้"><X size={13} /></button>}
               </div>
             ))}
           </div>
@@ -1088,37 +1167,56 @@ function StudentsTab({ students, sessions, pool, onPick, onAdd }) {
   );
 }
 
-// ─── ลิงก์สมัคร (หน้าที่เด็กเห็น) ──────────────────────────────
-function FormPreview({ say }) {
+// ─── ลิงก์สมัคร + รายการรอรับเข้าระบบ ─────────────────────────────
+function FormPreview({ say, onImport }) {
   const [copied, setCopied] = useState(false);
-  const url = "https://todaywhattodo.app/join/abc123";
+  const [regs, setRegs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const url = `${window.location.origin}/join`;
   const copy = () => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); };
-  const fields = ["ชื่อจริง", "นามสกุล", "ชื่อเล่น", "เบอร์โทร", "LINE ID", "Facebook", "Instagram"];
+  const refresh = () => { setLoading(true); loadRegistrations().then(setRegs).catch((e) => { console.error(e); say("โหลดรายการสมัครไม่สำเร็จ (ยังไม่ได้รันตาราง registrations?)"); }).finally(() => setLoading(false)); };
+  useEffect(() => { refresh(); }, []);
+  const accept = async (r) => {
+    onImport({ nick: r.nick, first: r.first, last: r.last, phone: r.phone, line: r.line, fb: r.fb, ig: r.ig });
+    try { await removeRegistration(r.id); } catch (e) { console.error(e); }
+    setRegs((all) => all.filter((x) => x.id !== r.id));
+  };
+  const reject = async (r) => { try { await removeRegistration(r.id); } catch (e) { console.error(e); } setRegs((all) => all.filter((x) => x.id !== r.id)); say("ลบรายการแล้ว"); };
   return (
     <div className="space-y-4">
       <div className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
         <div className="mb-1 text-sm font-semibold">ส่งลิงก์นี้ให้เด็กหลังจ่ายเงิน</div>
-        <p className="mb-3 text-xs text-slate-500">เด็กกรอกเอง ข้อมูลเข้าระบบทันที คุณแค่มากำหนดครู วัน เวลา</p>
+        <p className="mb-3 text-xs text-slate-500">เด็กกรอกเอง ไม่ต้องใส่รหัส ข้อมูลจะมารอในรายการด้านล่าง กด "รับเข้าระบบ" แล้วค่อยจัดคอร์ส วัน เวลา</p>
         <div className="flex items-center gap-2 rounded-xl px-3 py-2 text-sm" style={{ background: BLUE_SOFT, color: BLUE }}>
-          <span className="flex-1 truncate">{url}</span>
-          <button onClick={copy}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+          <a href={url} target="_blank" rel="noreferrer" className="flex-1 truncate underline">{url}</a>
+          <button onClick={copy} title="คัดลอก">{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+        </div>
+        <div className="mt-2 flex gap-2">
+          <a href={`https://line.me/R/share?text=${encodeURIComponent("ลงทะเบียนเรียนกับ Today What Todo ได้ที่นี่เลยครับ " + url)}`} target="_blank" rel="noreferrer"
+            className="rounded-full px-3 py-1.5 text-xs font-medium text-white" style={{ background: "#06C755" }}>แชร์ทาง LINE</a>
+          <a href={url} target="_blank" rel="noreferrer" className="rounded-full px-3 py-1.5 text-xs font-medium" style={{ background: "#fff", color: BLUE, border: `1px solid ${BLUE}` }}>เปิดดูหน้าฟอร์ม</a>
         </div>
       </div>
 
-      <div className="mx-auto max-w-sm overflow-hidden rounded-3xl shadow-lg" style={{ border: "8px solid " + INK }}>
-        <div className="px-5 py-6 text-white" style={{ background: BLUE }}>
-          <Logo size={16} />
-          <div className="mt-4 text-lg font-bold">ยินดีต้อนรับ 🎧</div>
-          <div className="text-sm text-white/80">กรอกข้อมูลนิดหน่อยแล้วเจอกันในคลาสครับ</div>
+      <div className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-sm font-semibold" style={{ color: BLUE }}>รอรับเข้าระบบ ({regs.length})</div>
+          <button onClick={refresh} className="rounded-full px-3 py-1 text-xs" style={{ background: "#EEF2FA", color: INK }}>{loading ? "กำลังโหลด…" : "รีเฟรช"}</button>
         </div>
-        <div className="space-y-3 bg-white p-5">
-          {fields.map((f) => (
-            <div key={f}>
-              <div className="mb-1 text-xs font-medium text-slate-600">{f}</div>
-              <div className="h-10 rounded-lg" style={{ border: "1px solid #D7E0F3", background: "#FAFBFF" }} />
+        {regs.length === 0 && !loading && <p className="py-4 text-center text-sm text-slate-500">ยังไม่มีคนสมัครใหม่</p>}
+        <div className="space-y-2">
+          {regs.map((r) => (
+            <div key={r.id} className="rounded-xl p-3 text-sm" style={{ border: "1px solid #EEF2FA" }}>
+              <div className="font-semibold">{r.nick} <span className="font-normal text-slate-500">{r.first} {r.last}</span></div>
+              <div className="text-xs text-slate-500">{[r.phone && `โทร ${r.phone}`, r.line && `LINE ${r.line}`, r.fb && `FB ${r.fb}`, r.ig && `IG ${r.ig}`].filter(Boolean).join(" · ")}</div>
+              {r.note && <div className="mt-1 rounded-lg px-2 py-1 text-xs" style={{ background: "#FFF3D6", color: "#7A4B00" }}>{r.note}</div>}
+              <div className="mt-2 flex items-center gap-2">
+                <span className="mr-auto text-xs text-slate-400">{new Date(r.created_at).toLocaleString("th-TH", { dateStyle: "short", timeStyle: "short" })}</span>
+                <button onClick={() => reject(r)} className="rounded-md px-2.5 py-1 text-xs" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบ</button>
+                <button onClick={() => accept(r)} className="rounded-md px-3 py-1 text-xs font-semibold text-white" style={{ background: BLUE }}>รับเข้าระบบ</button>
+              </div>
             </div>
           ))}
-          <button onClick={() => say("ส่งข้อมูลแล้ว (ตัวอย่าง)")} className="mt-2 w-full rounded-xl py-3 font-semibold text-white" style={{ background: BLUE }}>ส่งข้อมูล</button>
         </div>
       </div>
     </div>
