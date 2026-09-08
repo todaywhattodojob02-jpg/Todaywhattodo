@@ -921,18 +921,41 @@ function SchedulePanel({ student, sessions, courses, teachers, onSubmit, onClose
 
 // ─── หลังบ้าน ────────────────────────────────────────────────────
 function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, pool, rule, setRule, onPick, say }) {
-  const ymOf = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`;
-  const months = [...new Set([...sessions.map((s) => ymOf(s.at)), ...PURCHASES.map((b) => b.date.slice(0, 7))])].sort().reverse();
-  const [ym, setYm] = useState(ymOf(today));
-  const inMonth = sessions.filter((s) => s.done && ymOf(s.at) === ym);
   const rateOf = (course) => courses.find((c) => c.id === course)?.rate ?? 400;
+  const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+  // รอบบิลปิดวันที่ 25 ของทุกเดือน: งวดถูกตั้งชื่อตามเดือนที่ปิดบิล
+  // เช่น งวด "ก.ย." = 25 ส.ค. ถึง 24 ก.ย. (ปิด 25 ก.ย.) · cm เก็บเป็นเดือน 0–11
+  const CLOSE_DAY = 25;
+  const periodOf = (x) => {
+    let cm = x.getMonth(), cy = x.getFullYear();
+    if (x.getDate() >= CLOSE_DAY) { cm += 1; if (cm > 11) { cm = 0; cy += 1; } }
+    return `${cy}-${String(cm).padStart(2, "0")}`;
+  };
+  const periodRange = (key) => {
+    const [cy, cm] = key.split("-").map(Number);
+    return { start: new Date(cy, cm - 1, CLOSE_DAY), end: new Date(cy, cm, CLOSE_DAY) };
+  };
+  const periodLabel = (key) => { const [cy, cm] = key.split("-").map(Number); return `${TH_MONTH[cm]} ${cy + 543}`; };
+  const dmy = (x) => `${x.getDate()} ${TH_MONTH[x.getMonth()]}`;
 
+  const periods = [...new Set([...sessions.map((s) => periodOf(s.at)), ...PURCHASES.map((b) => periodOf(new Date(b.date + "T00:00:00")))])].sort().reverse();
+  const [ym, setYm] = useState(periodOf(today));
+  const { start: pStart, end: pEnd } = periodRange(ym);
+  const inMonth = sessions.filter((s) => s.done && s.at >= pStart && s.at < pEnd);
+
+  // แยกครู → คอร์ส → จำนวนคาบ × ค่าสอน
   const payroll = teachers.map((t) => {
     const mine = inMonth.filter((s) => s.teacher === t.id);
-    return { ...t, taught: mine.length, pay: mine.reduce((a, s) => a + rateOf(s.course), 0) };
+    const byCourse = {};
+    mine.forEach((s) => {
+      const k = s.course || "(ไม่ระบุคอร์ส)";
+      if (!byCourse[k]) byCourse[k] = { count: 0, rate: rateOf(s.course), pay: 0 };
+      byCourse[k].count += 1; byCourse[k].pay += rateOf(s.course);
+    });
+    return { ...t, taught: mine.length, pay: mine.reduce((a, s) => a + rateOf(s.course), 0), byCourse: Object.entries(byCourse).sort((a, b) => b[1].pay - a[1].pay) };
   }).filter((t) => t.taught > 0 || t.status === "Active");
 
-  const buys = PURCHASES.filter((b) => b.date.slice(0, 7) === ym && b.status === "Confirmed");
+  const buys = PURCHASES.filter((b) => { const d = new Date(b.date + "T00:00:00"); return d >= pStart && d < pEnd && b.status === "Confirmed"; });
   const revenue = buys.reduce((a, b) => a + (b.price || 0), 0);
   const courseCost = buys.reduce((a, b) => a + (courses.find((c) => c.id === b.course)?.cost || 0), 0);
   const salary = payroll.reduce((a, t) => a + t.pay, 0);
@@ -955,12 +978,12 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
   return (
     <div className="space-y-5">
       <section className="rounded-2xl p-5 text-white" style={{ background: BLUE }}>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-white/80">สรุปเดือน
+        <div className="flex flex-wrap items-center gap-2 text-sm text-white/80">งวด
           <select value={ym} onChange={(e) => setYm(e.target.value)} className="rounded-lg px-2 py-1 text-sm" style={{ ...font, background: "rgba(255,255,255,.15)", color: "#fff" }}>
-            {months.map((m) => <option key={m} value={m} style={{ color: INK }}>{m}</option>)}
+            {periods.map((m) => <option key={m} value={m} style={{ color: INK }}>{periodLabel(m)}</option>)}
           </select>
-          · สอนแล้ว {inMonth.length} คาบ · ขายคอร์ส {buys.length} รายการ
         </div>
+        <div className="mt-0.5 text-xs text-white/70">{dmy(pStart)} – {dmy(new Date(pEnd.getTime() - 86400000))} (ปิดบิลวันที่ 25) · สอน {inMonth.length} คาบ · ขายคอร์ส {buys.length} รายการ</div>
         <div className="mt-1 text-3xl font-extrabold">{baht(profit)}</div>
         <div className="text-sm text-white/80">รายได้คอร์ส − ต้นทุนคอร์ส − ค่าสอนครู</div>
         <div className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
@@ -971,15 +994,34 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold" style={{ color: BLUE }}>เงินเดือนครู — คิดจากคาบที่สอนจริง × ค่าสอนต่อคาบของคอร์สนั้น</h2>
-        <div className="overflow-hidden rounded-2xl bg-white" style={{ border: "1px solid #D7E0F3" }}>
-          {payroll.map((t, i) => (
-            <div key={t.id} className="flex items-center px-4 py-3" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
-              <div className="flex-1"><div className="font-semibold">{t.name}</div><div className="text-xs text-slate-500">สอนแล้ว {t.taught} คาบ</div></div>
-              <div className="font-bold" style={{ color: BLUE }}>{baht(t.pay)}</div>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold" style={{ color: BLUE }}>เงินเดือนครูงวดนี้ · {periodLabel(ym)}</h2>
+          <span className="text-xs text-slate-500">รวม {baht(salary)}</span>
+        </div>
+        <div className="space-y-2.5">
+          {payroll.filter((t) => t.taught > 0).map((t) => (
+            <div key={t.id} className="overflow-hidden rounded-2xl bg-white" style={{ border: "1px solid #D7E0F3" }}>
+              <div className="flex items-center px-4 py-2.5" style={{ background: BLUE_SOFT }}>
+                <div className="flex-1 font-semibold" style={{ color: INK }}>{t.name}</div>
+                <div className="text-right"><div className="text-xs text-slate-500">{t.taught} คาบ</div><div className="font-bold" style={{ color: BLUE }}>{baht(t.pay)}</div></div>
+              </div>
+              {t.byCourse.map(([course, info], i) => (
+                <div key={course} className="flex items-center px-4 py-2 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
+                  <div className="flex-1"><span className="font-medium">{course}</span></div>
+                  <div className="w-28 text-right text-xs text-slate-500">{info.count} × {baht(info.rate)}</div>
+                  <div className="w-20 text-right font-semibold">{baht(info.pay)}</div>
+                </div>
+              ))}
             </div>
           ))}
+          {payroll.filter((t) => t.taught > 0).length === 0 && (
+            <div className="rounded-2xl bg-white px-4 py-6 text-center text-sm text-slate-500" style={{ border: "1px solid #D7E0F3" }}>งวดนี้ยังไม่มีคาบที่สอนเสร็จ</div>
+          )}
         </div>
+        <div className="mt-2 flex items-center justify-between rounded-xl px-4 py-3 text-sm font-semibold text-white" style={{ background: INK }}>
+          <span>รวมค่าสอนทั้งหมดงวดนี้</span><span>{baht(salary)}</span>
+        </div>
+        <p className="mt-1.5 text-xs text-slate-500">นับเฉพาะคาบที่ติ๊กว่าเรียนแล้ว (Present) ในช่วง {dmy(pStart)}–{dmy(new Date(pEnd.getTime() - 86400000))} · คาบที่ครูสอนแทนจะนับให้ครูที่สอนจริง · แก้ค่าสอนต่อคาบได้ที่ตารางคอร์สด้านล่าง</p>
       </section>
 
       <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} />
