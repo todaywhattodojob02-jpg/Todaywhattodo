@@ -205,11 +205,12 @@ function Dashboard({ initial, loadErr }) {
     setOpen(null);
     say("ลบนักเรียนและคาบเรียนทั้งหมดของเขาแล้ว");
   };
-  const addStudent = (f) => {
+  const addStudent = (f, openAfter = false) => {
     const nums = rawStudents.map((x) => Number(x.id)).filter((n) => !isNaN(n));
     const id = String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, "0");
-    setStudents((all) => [...all, { id, nick: f.nick || "-", first: f.first || "", last: f.last || "", phone: f.phone || "", line: f.line || "", fb: f.fb || "", ig: f.ig || "", teacher: "", course: "", cls: "", purchases: [] }]);
+    setStudents((all) => [{ id, nick: f.nick || "-", first: f.first || "", last: f.last || "", phone: f.phone || "", line: f.line || "", fb: f.fb || "", ig: f.ig || "", teacher: "", course: "", cls: "", purchases: [] }, ...all]);
     say(`เพิ่มนักเรียน ${f.nick} (#${id}) แล้ว`);
+    if (openAfter) { setTab("students"); setOpen(id); }
     return id;
   };
   const certOf = (courseId) => !!courses.find((c) => c.id === courseId)?.cert;
@@ -412,11 +413,11 @@ function Dashboard({ initial, loadErr }) {
         )}
 
         {tab === "students" && (
-          <StudentsTab students={students} sessions={sessions} pool={pool} onPick={setOpen} onAdd={addStudent} />
+          <StudentsTab students={students} sessions={sessions} pool={pool} onPick={setOpen} onAdd={(f, open) => addStudent(f, open)} />
         )}
 
         {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} />}
-        {tab === "form" && <FormPreview say={say} onImport={(r) => addStudent(r)} />}
+        {tab === "form" && <FormPreview say={say} onImport={(r) => addStudent(r, true)} />}
       </main>
 
       {student && (
@@ -1177,9 +1178,10 @@ function FormPreview({ say, onImport }) {
   const refresh = () => { setLoading(true); loadRegistrations().then(setRegs).catch((e) => { console.error(e); say("โหลดรายการสมัครไม่สำเร็จ (ยังไม่ได้รันตาราง registrations?)"); }).finally(() => setLoading(false)); };
   useEffect(() => { refresh(); }, []);
   const accept = async (r) => {
-    onImport({ nick: r.nick, first: r.first, last: r.last, phone: r.phone, line: r.line, fb: r.fb, ig: r.ig });
+    const id = onImport({ nick: r.nick, first: r.first, last: r.last, phone: r.phone, line: r.line, fb: r.fb, ig: r.ig });
     try { await removeRegistration(r.id); } catch (e) { console.error(e); }
     setRegs((all) => all.filter((x) => x.id !== r.id));
+    say(`รับ ${r.nick} เข้าระบบแล้ว (#${id})`);
   };
   const reject = async (r) => { try { await removeRegistration(r.id); } catch (e) { console.error(e); } setRegs((all) => all.filter((x) => x.id !== r.id)); say("ลบรายการแล้ว"); };
   return (
