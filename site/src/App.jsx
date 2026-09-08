@@ -949,8 +949,8 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
     const byCourse = {};
     mine.forEach((s) => {
       const k = s.course || "(ไม่ระบุคอร์ส)";
-      if (!byCourse[k]) byCourse[k] = { count: 0, rate: rateOf(s.course), pay: 0 };
-      byCourse[k].count += 1; byCourse[k].pay += rateOf(s.course);
+      if (!byCourse[k]) byCourse[k] = { count: 0, rate: rateOf(s.course), pay: 0, items: [] };
+      byCourse[k].count += 1; byCourse[k].pay += rateOf(s.course); byCourse[k].items.push(s);
     });
     return { ...t, taught: mine.length, pay: mine.reduce((a, s) => a + rateOf(s.course), 0), byCourse: Object.entries(byCourse).sort((a, b) => b[1].pay - a[1].pay) };
   }).filter((t) => t.taught > 0 || t.status === "Active");
@@ -974,13 +974,18 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
 
   const lost = students.map((st) => ({ st, ...pool.get(st.id) })).filter((x) => x.forfeited.length > 0);
   const poolTotal = lost.reduce((a, x) => a + x.amount, 0);
+  const [openRow, setOpenRow] = useState(null); // `${teacherId}|${course}`
+  const nameOf = (id) => { const st = students.find((x) => x.id === id); return st ? `${st.nick}${st.first ? "-" + st.first : ""}` : id; };
 
   return (
     <div className="space-y-5">
       <section className="rounded-2xl p-5 text-white" style={{ background: BLUE }}>
-        <div className="flex flex-wrap items-center gap-2 text-sm text-white/80">งวด
-          <select value={ym} onChange={(e) => setYm(e.target.value)} className="rounded-lg px-2 py-1 text-sm" style={{ ...font, background: "rgba(255,255,255,.15)", color: "#fff" }}>
-            {periods.map((m) => <option key={m} value={m} style={{ color: INK }}>{periodLabel(m)}</option>)}
+        <div className="flex flex-wrap items-center gap-2 text-sm text-white/80">งวดปิดบิล
+          <select value={ym.split("-")[1]} onChange={(e) => setYm(`${ym.split("-")[0]}-${e.target.value}`)} className="rounded-lg px-2 py-1 text-sm" style={{ ...font, background: "rgba(255,255,255,.15)", color: "#fff" }}>
+            {TH_MONTH.map((m, i) => <option key={i} value={String(i).padStart(2, "0")} style={{ color: INK }}>{m}</option>)}
+          </select>
+          <select value={ym.split("-")[0]} onChange={(e) => setYm(`${e.target.value}-${ym.split("-")[1]}`)} className="rounded-lg px-2 py-1 text-sm" style={{ ...font, background: "rgba(255,255,255,.15)", color: "#fff" }}>
+            {[...new Set([...periods.map((pp) => pp.split("-")[0]), String(today.getFullYear())])].sort().reverse().map((y) => <option key={y} value={y} style={{ color: INK }}>{Number(y) + 543}</option>)}
           </select>
         </div>
         <div className="mt-0.5 text-xs text-white/70">{dmy(pStart)} – {dmy(new Date(pEnd.getTime() - 86400000))} (ปิดบิลวันที่ 25) · สอน {inMonth.length} คาบ · ขายคอร์ส {buys.length} รายการ</div>
@@ -1005,13 +1010,33 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
                 <div className="flex-1 font-semibold" style={{ color: INK }}>{t.name}</div>
                 <div className="text-right"><div className="text-xs text-slate-500">{t.taught} คาบ</div><div className="font-bold" style={{ color: BLUE }}>{baht(t.pay)}</div></div>
               </div>
-              {t.byCourse.map(([course, info], i) => (
-                <div key={course} className="flex items-center px-4 py-2 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
-                  <div className="flex-1"><span className="font-medium">{course}</span></div>
-                  <div className="w-28 text-right text-xs text-slate-500">{info.count} × {baht(info.rate)}</div>
-                  <div className="w-20 text-right font-semibold">{baht(info.pay)}</div>
-                </div>
-              ))}
+              {t.byCourse.map(([course, info]) => {
+                const key = `${t.id}|${course}`;
+                const open = openRow === key;
+                return (
+                  <div key={course} style={{ borderTop: "1px solid #EEF2FA" }}>
+                    <button onClick={() => setOpenRow(open ? null : key)} className="flex w-full items-center px-4 py-2 text-left text-sm">
+                      <ChevronRight size={14} className="mr-1 shrink-0 text-slate-400" style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+                      <div className="flex-1"><span className="font-medium">{course}</span></div>
+                      <div className="w-28 text-right text-xs text-slate-500">{info.count} × {baht(info.rate)}</div>
+                      <div className="w-20 text-right font-semibold">{baht(info.pay)}</div>
+                    </button>
+                    {open && (
+                      <div className="px-4 pb-2" style={{ background: "#FAFBFF" }}>
+                        {info.items.slice().sort((a, b) => a.at - b.at).map((s, k) => (
+                          <button key={s.id} onClick={() => onPick(s.studentId)} className="flex w-full items-center gap-2 py-1 text-left text-xs" style={k ? { borderTop: "1px solid #EEF2FA" } : {}}>
+                            <span className="w-24 shrink-0 text-slate-500">{thDate(s.at)}</span>
+                            <span className="w-12 shrink-0 text-slate-500">{s.noTime ? "" : thTime(s.at)}</span>
+                            <span className="flex-1 font-medium" style={{ color: INK }}>{nameOf(s.studentId)}</span>
+                            {s.origTeacher && <span className="rounded px-1" style={{ background: "#FFF3D6", color: "#7A4B00" }}>สอนแทน</span>}
+                            <span className="text-slate-400">{baht(info.rate)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))}
           {payroll.filter((t) => t.taught > 0).length === 0 && (
