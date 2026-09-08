@@ -763,9 +763,18 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
           )}
 
           {pickDate && (
-            <div className="mt-3 flex items-center gap-2 rounded-xl p-3" style={{ background: BLUE_SOFT }}>
-              <span className="text-sm">เลือกวันใหม่</span>
-              <input type="date" className="flex-1 rounded-lg border px-2 py-1.5 text-sm" onChange={(e) => { onChangeDate(pickDate, e.target.value); setPickDate(null); }} />
+            <div className="mt-3 rounded-xl p-3" style={{ background: BLUE_SOFT }}>
+              <div className="mb-2 text-sm font-semibold">เลื่อนคาบไปวัน / เวลาใหม่</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="flex-1 rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3", minWidth: 140 }} />
+                <select value={newTime} onChange={(e) => setNewTime(e.target.value)} className="rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3" }}>
+                  {TIMES.map((t) => <option key={t} value={t}>{t} น.</option>)}
+                </select>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => { onChangeDate(pickDate, newDate, newTime); setPickDate(null); }} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>บันทึก</button>
+                <button onClick={() => setPickDate(null)} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ยกเลิก</button>
+              </div>
             </div>
           )}
 
