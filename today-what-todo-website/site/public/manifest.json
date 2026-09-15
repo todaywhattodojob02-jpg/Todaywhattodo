@@ -1,0 +1,2 @@
+{ "name": "Today What Todo", "short_name": "TWT", "start_url": "/", "display": "standalone", "background_color": "#1656D6", "theme_color": "#1656D6",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
