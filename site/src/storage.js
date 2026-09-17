@@ -61,3 +61,32 @@ export async function removeRegistration(id) {
   const { error } = await supabase.from("registrations").delete().eq("id", id);
   if (error) throw error;
 }
+
+// ─── ฟอร์มลงทะเบียนข้อมูลครู (ครูกรอกเอง /teacher) ────────────
+const LS_TREG = "twt-teacher-regs";
+export async function submitTeacherReg(form) {
+  const row = { name: form.name, phone: form.phone || "", line_id: form.lineId || "", bank: form.bank || "", acct_no: form.acctNo || "", acct_name: form.acctName || "", promptpay: form.promptpay || "" };
+  if (!supabase) {
+    const list = JSON.parse(localStorage.getItem(LS_TREG) || "[]");
+    list.push({ ...row, id: Date.now(), created_at: new Date().toISOString() });
+    localStorage.setItem(LS_TREG, JSON.stringify(list));
+    return;
+  }
+  const { error } = await supabase.from("teacher_registrations").insert(row);
+  if (error) throw error;
+}
+export async function loadTeacherRegs() {
+  if (!supabase) return JSON.parse(localStorage.getItem(LS_TREG) || "[]");
+  const { data, error } = await supabase.from("teacher_registrations").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+export async function removeTeacherReg(id) {
+  if (!supabase) {
+    const list = JSON.parse(localStorage.getItem(LS_TREG) || "[]").filter((r) => r.id !== id);
+    localStorage.setItem(LS_TREG, JSON.stringify(list));
+    return;
+  }
+  const { error } = await supabase.from("teacher_registrations").delete().eq("id", id);
+  if (error) throw error;
+}

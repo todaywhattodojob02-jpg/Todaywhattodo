@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive } from "./storage.js";
+import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive, submitTeacherReg, loadTeacherRegs, removeTeacherReg } from "./storage.js";
 import {
   Volume2, SlidersVertical, Phone, MessageCircle, Facebook, Instagram,
-  CalendarDays, Users, Wallet, Link2, ChevronRight, X, Award, Copy, Check, Lock, Cloud, CloudOff,
+  CalendarDays, Users, Wallet, Link2, ChevronRight, X, Award, Copy, Check, Lock, Cloud, CloudOff, DoorOpen,
 } from "lucide-react";
 
 // ─── ธีมสีตามโลโก้ ───────────────────────────────────────────
@@ -67,6 +67,7 @@ const PIN = import.meta.env.VITE_ADMIN_PIN || "";
 
 export default function App() {
   if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/join") return <JoinPage />;
+  if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/teacher") return <TeacherJoinPage />;
   return <AdminApp />;
 }
 
@@ -182,9 +183,15 @@ function Dashboard({ initial, loadErr }) {
   const [sessions, setSessions] = useState(initial?.sessions || INITIAL_SESSIONS);
   const [courses, setCourses] = useState(initial?.courses || COURSES);
   const [teachers, setTeachers] = useState(initial?.teachers || TEACHERS);
+  const [biz, setBiz] = useState(initial?.biz || { name: "Today What Todo (Sound With Today)", phone: "", address: "", taxId: "", promptpay: "" });
+  const [groups, setGroups] = useState(initial?.groups || []);
+  const [layout, setLayout] = useState(initial?.layout || { floors: [{ id: "f1", name: "ชั้น 1", rooms: [] }, { id: "f2", name: "ชั้น 2", rooms: [] }, { id: "f3", name: "ชั้น 3", rooms: [] }] });
+  const [usage, setUsage] = useState(initial?.usage || []);
+  const [receipt, setReceipt] = useState(null); // ใบเสร็จที่กำลังเปิด
   const [saveStatus, setSaveStatus] = useState(loadErr ? "error" : "saved"); // saved | saving | error
   const firstRun = useRef(true);
 
+  const updateTeacher = (id, patch) => setTeachers((all) => all.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   const addTeacher = (name) => {
     const n = name.trim();
     if (!n) return;
@@ -233,6 +240,9 @@ function Dashboard({ initial, loadErr }) {
     }));
     say(`เปลี่ยนครูสอนคาบนี้เป็น ${teacher}`);
   };
+  const setSessionRoom = (sessionId, room) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, room: room || undefined } : x)));
+  const roomNameById = useMemo(() => { const m = {}; (layout.floors || []).forEach((f) => f.rooms.forEach((r) => { m[r.id] = r.name; })); return m; }, [layout]);
+  const roomLabelOf = (room) => room === "online" ? "ออนไลน์" : (room && roomNameById[room]) ? roomNameById[room] : "";
   const setSessionNote = (sessionId, note) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, note } : x)));
   const setSessionScore = (sessionId, score) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, score } : x)));
   const [conflict, setConflict] = useState(null); // { list, run }
@@ -296,7 +306,7 @@ function Dashboard({ initial, loadErr }) {
   // สำรอง/กู้คืนไฟล์ + สำรองอัตโนมัติวันละครั้ง
   const exportBackup = () => {
     try {
-      const payload = JSON.stringify(serialize({ students: rawStudents, sessions, courses, teachers, rule }));
+      const payload = JSON.stringify(serialize({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage }));
       const blob = new Blob([payload], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -316,6 +326,10 @@ function Dashboard({ initial, loadErr }) {
         if (parsed.courses) setCourses(parsed.courses);
         if (parsed.teachers) setTeachers(parsed.teachers);
         if (parsed.rule) setRule(parsed.rule);
+        if (parsed.biz) setBiz(parsed.biz);
+        if (parsed.groups) setGroups(parsed.groups);
+        if (parsed.layout) setLayout(parsed.layout);
+        if (parsed.usage) setUsage(parsed.usage);
         say("กู้คืนข้อมูลจากไฟล์แล้ว");
       } catch (e) { say("ไฟล์สำรองไม่ถูกต้อง: " + (e.message || e)); }
     };
@@ -338,12 +352,12 @@ function Dashboard({ initial, loadErr }) {
     if (firstRun.current) { firstRun.current = false; return; }
     setSaveStatus("saving");
     const t = setTimeout(() => {
-      saveState({ students: rawStudents, sessions, courses, teachers, rule })
+      saveState({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage })
         .then(() => setSaveStatus("saved"))
         .catch((e) => { console.error(e); setSaveStatus("error"); });
     }, 800);
     return () => clearTimeout(t);
-  }, [rawStudents, sessions, courses, teachers, rule]);
+  }, [rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage]);
 
   const pool = useMemo(() => {
     const m = new Map();
@@ -411,6 +425,24 @@ function Dashboard({ initial, loadErr }) {
   };
 
   const deleteSession = (sessionId) => { setSessions((all) => all.filter((x) => x.id !== sessionId)); say("ลบคาบแล้ว"); };
+  // เลื่อนคาบนี้ไปวัน/เวลาใหม่ แล้วรันคาบที่เหลือ (คอร์สเดียวกัน ยังไม่เรียน) ต่อรายสัปดาห์จากวันนั้น
+  const rescheduleFrom = (sessionId, dateValue, timeValue) => {
+    const target = sessions.find((s) => s.id === sessionId);
+    if (!target) return;
+    const [h, m] = (timeValue || `${target.at.getHours()}:${target.at.getMinutes()}`).split(":").map(Number);
+    const start = dateValue ? new Date(dateValue + "T00:00:00") : new Date(target.at);
+    start.setHours(h, m, 0, 0);
+    const chain = sessions.filter((s) => s.studentId === target.studentId && s.course === target.course && s.cls === target.cls && !s.done && s.at >= target.at).sort((a, b) => a.at - b.at);
+    const ids = chain.map((s) => s.id);
+    const dates = chain.map((_, i) => { const at = new Date(start); at.setDate(at.getDate() + 7 * i); at.setHours(h, m, 0, 0); return at; });
+    const run = () => {
+      setSessions((all) => all.map((s) => { const i = ids.indexOf(s.id); return i === -1 ? s : { ...s, at: dates[i], noTime: false }; }));
+      say(`เลื่อน ${chain.length} คาบ รันรายสัปดาห์ เริ่ม ${thDate(start)} ${timeValue || thTime(start)}`);
+    };
+    const cl = conflictsFor(dates, target.teacher, target.studentId);
+    if (cl.length) { setConflict({ list: cl, run: () => { setConflict(null); run(); } }); return; }
+    run();
+  };
   const deleteUnusedPast = () => {
     const stale = sessions.filter((x) => !x.done && !x.absent && x.at < today);
     if (!stale.length) { say("ไม่มีคาบเก่าที่เลยมาแล้วแต่ยังไม่ได้เช็ค"); return; }
@@ -430,6 +462,42 @@ function Dashboard({ initial, loadErr }) {
   };
   const markDone = (sessionId) =>
     setSessions((all) => all.map((s) => (s.id === sessionId ? { ...s, done: !s.done } : s)));
+
+  // ── คลาสกลุ่ม ──────────────────────────────────────────────
+  const createGroup = ({ name, course, teacher, startDate, time, count, costPerSession }) => {
+    const id = "g" + (seq++);
+    const gname = (name && name.trim()) || `กลุ่ม ${groups.length + 1}`;
+    setGroups((all) => [...all, { id, name: gname, course, teacher, startDate, time, count: Number(count) || 0, costPerSession: Number(costPerSession) || 0, members: [] }]);
+    say(`สร้างคลาสกลุ่ม "${gname}" แล้ว — เพิ่มนักเรียนเข้ากลุ่มได้เลย`);
+    return id;
+  };
+  const addGroupMember = (groupId, studentId) => {
+    const g = groups.find((x) => x.id === groupId);
+    if (!g || g.members.includes(studentId)) return;
+    const [h, m] = (g.time || "18:00").split(":").map(Number);
+    const start = new Date(g.startDate + "T00:00:00"); start.setHours(h, m, 0, 0);
+    const added = Array.from({ length: g.count }, (_, i) => { const at = new Date(start); at.setDate(at.getDate() + 7 * i); at.setHours(h, m, 0, 0); return { id: "x" + seq++, studentId, at, done: false, teacher: g.teacher, course: g.course, n: i + 1, total: g.count, cls: g.name, rate: g.costPerSession }; });
+    setSessions((all) => [...all, ...added]);
+    setGroups((all) => all.map((x) => (x.id === groupId ? { ...x, members: [...x.members, studentId] } : x)));
+    setStudents((all) => all.map((x) => (x.id === studentId ? { ...x, course: g.course, teacher: g.teacher } : x)));
+    const st = students.find((x) => x.id === studentId);
+    say(`เพิ่ม ${st ? st.nick : studentId} เข้ากลุ่ม "${g.name}" (${g.count} คาบ)`);
+  };
+  const removeGroupMember = (groupId, studentId) => {
+    const g = groups.find((x) => x.id === groupId);
+    if (!g) return;
+    setSessions((all) => all.filter((x) => !(x.studentId === studentId && x.cls === g.name && !x.done)));
+    setGroups((all) => all.map((x) => (x.id === groupId ? { ...x, members: x.members.filter((mid) => mid !== studentId) } : x)));
+    say("นำออกจากกลุ่มแล้ว (ลบเฉพาะคาบที่ยังไม่เรียน)");
+  };
+  const deleteGroup = (groupId) => {
+    const g = groups.find((x) => x.id === groupId);
+    if (!g) return;
+    if (!window.confirm(`ลบคลาสกลุ่ม "${g.name}"? คาบที่ยังไม่เรียนของสมาชิกจะถูกลบ`)) return;
+    setSessions((all) => all.filter((x) => !(x.cls === g.name && !x.done)));
+    setGroups((all) => all.filter((x) => x.id !== groupId));
+    say(`ลบกลุ่ม "${g.name}" แล้ว`);
+  };
 
   // ต่อคอร์ส: สร้างคาบใหม่ต่อจากคาบสุดท้าย สัปดาห์ละครั้ง
   const renew = (id, courseId, discountPct = 0) => {
@@ -474,6 +542,7 @@ function Dashboard({ initial, loadErr }) {
           {[
             ["schedule", CalendarDays, "ตารางสอน"],
             ["students", Users, "นักเรียน"],
+            ["rooms", DoorOpen, "ห้องเรียน"],
             ["admin", Wallet, "หลังบ้าน"],
             ["form", Link2, "ลิงก์สมัคร"],
           ].map(([k, Icon, label]) => (
@@ -491,14 +560,15 @@ function Dashboard({ initial, loadErr }) {
           <WeekGrid sessions={sessions} students={students} forfeitedIds={forfeitedIds}
             teacherFilter={teacherFilter} setTeacherFilter={setTeacherFilter}
             studentFilter={studentFilter} setStudentFilter={setStudentFilter}
-            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} />
+            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} roomLabelOf={roomLabelOf} />
         )}
 
         {tab === "students" && (
           <StudentsTab students={students} sessions={sessions} pool={pool} onPick={setOpen} onAdd={(f, open) => addStudent(f, open)} />
         )}
 
-        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} />}
+        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} />}
+        {tab === "rooms" && <RoomsTab layout={layout} setLayout={setLayout} usage={usage} setUsage={setUsage} sessions={sessions} students={students} onSetRoom={setSessionRoom} onPick={setOpen} say={say} />}
         {tab === "form" && <FormPreview say={say} courses={courses} teachers={teachers.filter((t) => t.status === "Active")} onAccept={acceptRegistration} />}
       </main>
 
@@ -513,9 +583,11 @@ function Dashboard({ initial, loadErr }) {
           onForce={() => { setFlag(student.id, { forced: !student.forced, exempt: false }); say(student.forced ? "ยกเลิกการยกเข้าส่วนกลาง" : "ยกคาบที่เหลือเข้าส่วนกลางแล้ว"); }}
           onClose={() => { setOpen(null); setSchedOpen(false); }}
           onLeave={(course, note) => leave(student.id, course, note)} onChangeDate={changeDate} onDone={markDone} onRenew={(c, disc) => renew(student.id, c, disc)}
-          onNote={setSessionNote} onScore={setSessionScore} />
+          onNote={setSessionNote} onScore={setSessionScore} onReschedule={rescheduleFrom} layout={layout} onSetRoom={setSessionRoom} roomLabelOf={roomLabelOf}
+          onReceipt={(b) => setReceipt({ kind: "in", no: `RC-${(b.date || toInput(today)).replace(/-/g, "")}-${student.id}`, date: b.date || toInput(today), party: `${student.nick} ${student.first || ""} ${student.last || ""}`.trim(), items: [{ label: `${b.course} (${b.total} คาบ)${b.discount ? ` · ลด ${b.discount}%` : ""}`, amount: b.price || 0 }], total: b.price || 0, note: b.teacher ? `ครูผู้สอน: ${b.teacher}` : "" })} />
       )}
 
+      {receipt && <Receipt data={receipt} biz={biz} onClose={() => setReceipt(null)} />}
       {conflict && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setConflict(null)}>
           <div className="w-full max-w-xs rounded-2xl bg-white p-4" style={{ color: INK }} onClick={(e) => e.stopPropagation()}>
@@ -560,7 +632,7 @@ const mondayOf = (x) => { const m = new Date(x); const wd = (m.getDay() + 6) % 7
 const toInput = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
 const slotKey = (x) => `${x.getHours()}:${x.getMinutes() < 30 ? "00" : "30"}`;
 
-function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers }) {
+function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers, roomLabelOf }) {
   const [weekStart, setWeekStart] = useState(() => mondayOf(today));
   const [q, setQ] = useState("");
   useEffect(() => { if (jumpTo) setWeekStart(mondayOf(jumpTo)); }, [jumpTo]);
@@ -711,6 +783,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
                               : { background: s.done ? "#EEF2FA" : "#fff", color: s.done ? "#64748B" : INK, borderLeft: `3px solid ${s.done ? "#94A3B8" : DAY_COLORS[di].head}`, boxShadow: "0 1px 0 rgba(0,0,0,.04)" }}>
                             <div className="font-semibold">{s.student.nick}-{s.student.first}{forfeitedIds.has(s.id) ? " · ส่วนกลาง" : ""}{s.origTeacher ? <span className="ml-1 rounded px-1 text-xs font-normal" style={{ background: "#FFF3D6", color: "#7A4B00" }}>แทน</span> : null}</div>
                             <div className="text-xs opacity-80">{s.course || s.student.course}{s.total ? ` (${s.n}/${s.total})` : ""}{teacherFilter === "all" || studentFilter !== "all" ? ` · ${s.teacher || s.student.teacher}` : ""}</div>
+                            {roomLabelOf && roomLabelOf(s.room) ? <div className="text-xs font-medium" style={{ color: s.room === "online" ? "#7C3AED" : "#1656D6" }}>{s.room === "online" ? "🌐 " : "📍 "}{roomLabelOf(s.room)}</div> : null}
                           </button>
                         ))}
                       </td>
@@ -728,12 +801,14 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
 }
 
 // ─── โปรไฟล์นักเรียน ────────────────────────────────────────────
-function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew, onNote, onScore }) {
+function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew, onNote, onScore, onReschedule, onReceipt, layout, onSetRoom, roomLabelOf }) {
   const [renewOpen, setRenewOpen] = useState(false);
   const [disc, setDisc] = useState(0);
   const [pickDate, setPickDate] = useState(null);
+  const [cascade, setCascade] = useState(true);
   const [confirmDel, setConfirmDel] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  const [doneModal, setDoneModal] = useState(null); // { id, note } — บันทึกการสอนตอนเช็กว่าเรียนแล้ว
   const [leaveNote, setLeaveNote] = useState("");
   const [newDate, setNewDate] = useState("");
   const [newTime, setNewTime] = useState("");
@@ -771,6 +846,24 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
 
   return (
     <div className="fixed inset-0 z-20 flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
+      {doneModal && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4" onClick={(e) => { e.stopPropagation(); setDoneModal(null); }}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-4" style={{ color: INK }} onClick={(e) => e.stopPropagation()}>
+            <div className="text-base font-bold">บันทึกการสอน</div>
+            <div className="mb-2 text-xs text-slate-500">คาบนี้สอนอะไรไปบ้าง / การบ้านที่สั่ง (ไม่บังคับ)</div>
+            <textarea value={doneModal.note} onChange={(e) => setDoneModal({ ...doneModal, note: e.target.value })} rows={3} autoFocus
+              placeholder="เช่น สอนเขียนกลอง 8 ห้อง · การบ้าน: ทำ loop มาส่ง"
+              className="w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3" }} />
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => { onNote(doneModal.id, doneModal.note.trim()); onDone(doneModal.id); setDoneModal(null); }}
+                className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>บันทึก · เช็กว่าเรียนแล้ว</button>
+              <button onClick={() => { onDone(doneModal.id); setDoneModal(null); }}
+                className="rounded-lg px-3 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ข้าม</button>
+            </div>
+            <button onClick={() => setDoneModal(null)} className="mt-2 w-full text-center text-xs text-slate-400">ยกเลิก (ยังไม่เช็กว่าเรียน)</button>
+          </div>
+        </div>
+      )}
       <div className="w-full max-w-md overflow-y-auto rounded-t-2xl bg-white text-sm sm:rounded-2xl" style={{ maxHeight: "92vh" }} onClick={(e) => e.stopPropagation()}>
         <div className="px-4 pt-3 pb-3 text-white" style={{ background: BLUE }}>
           <div className="flex items-start justify-between">
@@ -886,8 +979,12 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
                   {TIMES.map((t) => <option key={t} value={t}>{t} น.</option>)}
                 </select>
               </div>
+              <label className="mt-2 flex items-center gap-2 text-xs">
+                <input type="checkbox" checked={cascade} onChange={(e) => setCascade(e.target.checked)} className="h-4 w-4" />
+                รันคาบที่เหลือใหม่รายสัปดาห์ นับจากวันนี้ (คาบถัดๆ ไปจะเลื่อนตามอัตโนมัติ)
+              </label>
               <div className="mt-2 flex gap-2">
-                <button onClick={() => { onChangeDate(pickDate, newDate, newTime); setPickDate(null); }} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>บันทึก</button>
+                <button onClick={() => { (cascade ? onReschedule : onChangeDate)(pickDate, newDate, newTime); setPickDate(null); }} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>บันทึก</button>
                 <button onClick={() => setPickDate(null)} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ยกเลิก</button>
               </div>
             </div>
@@ -928,7 +1025,8 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
                   <div key={i} className="flex items-center px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
                     <div className="flex-1"><span className="font-medium">{b.course}</span><span className="text-slate-500"> · {b.date} · {b.teacher} · {b.total} คาบ{b.time ? ` · ${b.time}` : ""}{b.discount ? ` · ลด ${b.discount}%` : ""}</span></div>
                     <div className="font-semibold">{b.price ? baht(b.price) : "-"}</div>
-                    <button onClick={() => onDeletePurchase(i)} className="ml-2 text-slate-300 hover:text-red-600" title="ลบรายการซื้อนี้"><X size={14} /></button>
+                    <button onClick={() => onReceipt(b)} className="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: BLUE_SOFT, color: BLUE }} title="ออกใบเสร็จรับเงิน">ใบเสร็จ</button>
+                    <button onClick={() => onDeletePurchase(i)} className="ml-1 text-slate-300 hover:text-red-600" title="ลบรายการซื้อนี้"><X size={14} /></button>
                   </div>
                 ))}
               </div>
@@ -944,7 +1042,7 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
           <div className="overflow-hidden rounded-xl" style={{ border: "1px solid #D7E0F3" }}>
             {inCourse.map((s, i) => (
               <div key={s.id} className="flex items-center gap-2 px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
-                <input type="checkbox" checked={s.done} onChange={() => onDone(s.id)} className="h-3.5 w-3.5 shrink-0" />
+                <input type="checkbox" checked={s.done} onChange={() => { if (!s.done) setDoneModal({ id: s.id, note: s.note || "" }); else onDone(s.id); }} className="h-3.5 w-3.5 shrink-0" />
                 <span className={"flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 " + (s.done ? "text-slate-400" : "")}>
                   <span className="whitespace-nowrap">{s.n || i + 1}{s.total ? `/${s.total}` : ""} · {thDate(s.at)} {s.noTime ? "" : thTime(s.at)}</span>
                   <span className="flex items-center gap-1 text-xs">
@@ -954,6 +1052,12 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
                       {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                     </select>
                     {s.origTeacher && <span className="rounded px-1" style={{ background: "#FFF3D6", color: "#7A4B00" }}>สอนแทน {s.origTeacher}</span>}
+                    <select value={s.room || ""} onChange={(e) => onSetRoom(s.id, e.target.value)} title="ห้องเรียน"
+                      className="rounded px-1 py-0" style={{ ...font, border: "1px solid #D7E0F3", background: s.room === "online" ? "#F3EEFF" : s.room ? "#EAF0FF" : "#fff", color: INK }}>
+                      <option value="">— ห้อง —</option>
+                      <option value="online">🌐 ออนไลน์</option>
+                      {(layout?.floors || []).map((f) => f.rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>))}
+                    </select>
                   </span>
                   {(s.course || "").includes("เทคโนโลยี")
                     ? <input value={s.score || ""} onChange={(e) => onScore(s.id, e.target.value)} placeholder="Kahoot"
@@ -1048,7 +1152,7 @@ function SchedulePanel({ student, sessions, courses, teachers, onSubmit, onClose
 }
 
 // ─── หลังบ้าน ────────────────────────────────────────────────────
-function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore }) {
+function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, periodLabelStr }) {
   const rateOf = (course) => courses.find((c) => c.id === course)?.rate ?? 400;
   const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
   // รอบบิลปิดวันที่ 25 ของทุกเดือน: งวดถูกตั้งชื่อตามเดือนที่ปิดบิล
@@ -1073,15 +1177,16 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
   const inMonth = sessions.filter((s) => s.done && s.at >= pStart && s.at < pEnd);
 
   // แยกครู → คอร์ส → จำนวนคาบ × ค่าสอน
+  const rOf = (s) => (s.rate != null && s.rate !== "" ? Number(s.rate) : rateOf(s.course));
   const payroll = teachers.map((t) => {
     const mine = inMonth.filter((s) => s.teacher === t.id);
     const byCourse = {};
     mine.forEach((s) => {
-      const k = s.course || "(ไม่ระบุคอร์ส)";
-      if (!byCourse[k]) byCourse[k] = { count: 0, rate: rateOf(s.course), pay: 0, items: [] };
-      byCourse[k].count += 1; byCourse[k].pay += rateOf(s.course); byCourse[k].items.push(s);
+      const k = (s.course || "(ไม่ระบุคอร์ส)") + (s.cls && s.cls.startsWith("กลุ่ม") ? ` · ${s.cls}` : "");
+      if (!byCourse[k]) byCourse[k] = { count: 0, rate: rOf(s), pay: 0, items: [] };
+      byCourse[k].count += 1; byCourse[k].pay += rOf(s); byCourse[k].items.push(s);
     });
-    return { ...t, taught: mine.length, pay: mine.reduce((a, s) => a + rateOf(s.course), 0), byCourse: Object.entries(byCourse).sort((a, b) => b[1].pay - a[1].pay) };
+    return { ...t, taught: mine.length, pay: mine.reduce((a, s) => a + rOf(s), 0), byCourse: Object.entries(byCourse).sort((a, b) => b[1].pay - a[1].pay) };
   }).filter((t) => t.taught > 0 || t.status === "Active");
 
   const buys = allBuys.filter((b) => { if (!b.date) return false; const d = new Date(b.date + "T00:00:00"); return d >= pStart && d < pEnd && b.status === "Confirmed"; });
@@ -1135,8 +1240,9 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
         <div className="space-y-2.5">
           {payroll.filter((t) => t.taught > 0).map((t) => (
             <div key={t.id} className="overflow-hidden rounded-2xl bg-white" style={{ border: "1px solid #D7E0F3" }}>
-              <div className="flex items-center px-4 py-2.5" style={{ background: BLUE_SOFT }}>
+              <div className="flex items-center gap-2 px-4 py-2.5" style={{ background: BLUE_SOFT }}>
                 <div className="flex-1 font-semibold" style={{ color: INK }}>{t.name}</div>
+                <button onClick={() => onReceipt({ kind: "out", no: `PV-${ym.replace("-", "")}-${t.id}`, date: toInput(today), party: t.name, items: t.byCourse.map(([course, info]) => ({ label: `${course} (${info.count} คาบ × ${baht(info.rate)})`, amount: info.pay })), total: t.pay, note: `ค่าสอนงวด ${periodLabel(ym)}` })} className="rounded-md px-2 py-1 text-xs font-medium" style={{ background: "#fff", color: BLUE, border: `1px solid ${BLUE}` }}>ใบจ่าย</button>
                 <div className="text-right"><div className="text-xs text-slate-500">{t.taught} คาบ</div><div className="font-bold" style={{ color: BLUE }}>{baht(t.pay)}</div></div>
               </div>
               {t.byCourse.map(([course, info]) => {
@@ -1178,7 +1284,21 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
         <p className="mt-1.5 text-xs text-slate-500">นับเฉพาะคาบที่ติ๊กว่าเรียนแล้ว (Present) ในช่วง {dmy(pStart)}–{dmy(new Date(pEnd.getTime() - 86400000))} · คาบที่ครูสอนแทนจะนับให้ครูที่สอนจริง · แก้ค่าสอนต่อคาบได้ที่ตารางคอร์สด้านล่าง</p>
       </section>
 
-      <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} />
+      <GroupClasses groups={groups} students={students} teachers={teachers.filter((t) => t.status === "Active")} courses={courses} onCreate={onCreateGroup} onAddMember={onAddMember} onRemoveMember={onRemoveMember} onDelete={onDeleteGroup} onPick={onPick} />
+
+      <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} onUpdate={onUpdateTeacher} />
+
+      <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+        <div className="mb-1 text-sm font-semibold" style={{ color: BLUE }}>ข้อมูลธุรกิจ (สำหรับใบเสร็จ)</div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {[["name", "ชื่อร้าน/โรงเรียน"], ["phone", "เบอร์โทร"], ["address", "ที่อยู่"], ["taxId", "เลขผู้เสียภาษี"], ["promptpay", "พร้อมเพย์"]].map(([k, label]) => (
+            <label key={k} className="block text-xs text-slate-500">{label}
+              <input value={biz[k] || ""} onChange={(e) => setBiz({ ...biz, [k]: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3" }} />
+            </label>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs text-slate-500">ข้อมูลนี้จะขึ้นหัวใบเสร็จรับเงิน/ใบจ่ายเงิน</p>
+      </section>
 
       <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
         <div className="mb-1 text-sm font-semibold" style={{ color: BLUE }}>ข้อมูลและการสำรอง</div>
@@ -1273,9 +1393,25 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
 }
 
 
-// ─── จัดการครู ────────────────────────────────────────────────────
-function TeacherEditor({ teachers, sessions, onAdd, onRemove }) {
+// ─── จัดการครู + ข้อมูลติดต่อ/การเงิน + รับข้อมูลที่ครูกรอกเอง ─────────
+function TeacherEditor({ teachers, sessions, onAdd, onRemove, onUpdate }) {
   const [name, setName] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [regs, setRegs] = useState([]);
+  useEffect(() => { loadTeacherRegs().then(setRegs).catch(() => {}); }, []);
+  const applyReg = async (r) => {
+    const match = teachers.find((t) => t.name.trim().toLowerCase() === (r.name || "").trim().toLowerCase());
+    if (!match) { if (!window.confirm(`ยังไม่มีครูชื่อ "${r.name}" ในระบบ — เพิ่มเป็นครูใหม่ก่อนไหม? (กดตกลงเพื่อเพิ่ม)`)) return; onAdd(r.name); }
+    const id = match ? match.id : r.name;
+    onUpdate(id, { phone: r.phone || "", lineId: r.line_id || "", bank: r.bank || "", acctNo: r.acct_no || "", acctName: r.acct_name || "", promptpay: r.promptpay || "" });
+    try { await removeTeacherReg(r.id); } catch (e) {}
+    setRegs((all) => all.filter((x) => x.id !== r.id));
+  };
+  const fld = (t, k, label) => (
+    <label className="block text-xs text-slate-500">{label}
+      <input value={t[k] || ""} onChange={(e) => onUpdate(t.id, { [k]: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3" }} />
+    </label>
+  );
   return (
     <section>
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -1286,25 +1422,47 @@ function TeacherEditor({ teachers, sessions, onAdd, onRemove }) {
           <button onClick={() => { onAdd(name); setName(""); }} className="rounded-full px-3 py-1 text-sm font-medium text-white" style={{ background: BLUE }}>+ เพิ่มครู</button>
         </div>
       </div>
+
+      {regs.length > 0 && (
+        <div className="mb-2 rounded-2xl p-3" style={{ background: "#FFF3D6", border: "1px solid #F5D488" }}>
+          <div className="mb-1 text-xs font-semibold" style={{ color: "#7A4B00" }}>ครูกรอกข้อมูลเข้ามาใหม่ ({regs.length})</div>
+          {regs.map((r) => (
+            <div key={r.id} className="mb-1 flex items-center gap-2 rounded-lg bg-white px-2.5 py-1.5 text-xs">
+              <div className="flex-1"><b>{r.name}</b>{r.phone ? ` · ${r.phone}` : ""}{r.line_id ? ` · LINE ${r.line_id}` : ""}{r.bank ? ` · ${r.bank} ${r.acct_no || ""}` : ""}</div>
+              <button onClick={() => applyReg(r)} className="rounded-md px-2 py-1 font-semibold text-white" style={{ background: BLUE }}>อัปเดตให้ครูนี้</button>
+              <button onClick={async () => { try { await removeTeacherReg(r.id); } catch (e) {} setRegs((all) => all.filter((x) => x.id !== r.id)); }} className="rounded-md px-2 py-1" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบ</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="overflow-hidden rounded-2xl bg-white" style={{ border: "1px solid #D7E0F3" }}>
         {teachers.map((t, i) => {
           const n = sessions.filter((x) => x.teacher === t.id).length;
           const off = t.status !== "Active";
+          const exp = openId === t.id;
           return (
-            <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 text-sm" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
-              <div className="flex-1">
-                <span className={"font-semibold " + (off ? "text-slate-400 line-through" : "")}>{t.name}</span>
-                <span className="ml-2 text-xs text-slate-500">{n ? `สอนแล้ว ${n} คาบ` : "ยังไม่มีคาบ"}{off ? " · พักการสอน" : ""}</span>
+            <div key={t.id} style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
+              <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                <button onClick={() => setOpenId(exp ? null : t.id)} className="flex flex-1 items-center text-left">
+                  <ChevronRight size={14} className="mr-1 shrink-0 text-slate-400" style={{ transform: exp ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+                  <span className={"font-semibold " + (off ? "text-slate-400 line-through" : "")}>{t.name}</span>
+                  <span className="ml-2 text-xs text-slate-500">{n ? `${n} คาบ` : "ยังไม่มีคาบ"}{off ? " · พัก" : ""}{t.phone ? " · ☎" : ""}</span>
+                </button>
+                <button onClick={() => onRemove(t.id)} className="rounded-md px-2.5 py-1 text-xs" style={n ? { background: "#EEF2FA", color: INK } : { background: "#FDE8E8", color: "#B42318" }}>{n ? (off ? "เปิดใช้งาน" : "พักการสอน") : "ลบ"}</button>
               </div>
-              <button onClick={() => onRemove(t.id)} className="rounded-md px-2.5 py-1 text-xs"
-                style={n ? { background: "#EEF2FA", color: INK } : { background: "#FDE8E8", color: "#B42318" }}>
-                {n ? (off ? "เปิดใช้งาน" : "พักการสอน") : "ลบ"}
-              </button>
+              {exp && (
+                <div className="grid grid-cols-1 gap-2 px-4 pb-3 sm:grid-cols-2" style={{ background: "#FAFBFF" }}>
+                  {fld(t, "phone", "เบอร์โทร")}{fld(t, "lineId", "LINE ID")}
+                  {fld(t, "bank", "ธนาคาร")}{fld(t, "acctNo", "เลขบัญชี")}
+                  {fld(t, "acctName", "ชื่อบัญชี")}{fld(t, "promptpay", "พร้อมเพย์")}
+                </div>
+              )}
             </div>
           );
         })}
       </div>
-      <p className="mt-1.5 text-xs text-slate-500">ครูที่มีประวัติสอนแล้วจะลบไม่ได้ (เพื่อไม่ให้เงินเดือนย้อนหลังหาย) แต่กด "พักการสอน" ให้หายจากตัวเลือกในตารางได้</p>
+      <p className="mt-1.5 text-xs text-slate-500">แตะชื่อครูเพื่อกรอกเบอร์/LINE/บัญชี · ครูกรอกเองได้ที่ลิงก์ /teacher · ครูที่มีประวัติสอนแล้วลบไม่ได้ กด "พักการสอน" แทน</p>
     </section>
   );
 }
@@ -1479,6 +1637,446 @@ function RegAcceptForm({ courses, teachers, onConfirm, onCancel }) {
           className="flex-1 rounded-lg py-2 text-sm font-semibold text-white disabled:opacity-40" style={{ background: BLUE }}>รับเข้าระบบ + จัดคาบ</button>
         <button onClick={onCancel} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ยกเลิก</button>
       </div>
+    </div>
+  );
+}
+
+// ─── ใบเสร็จรับเงิน / จ่ายเงิน (พิมพ์ได้) ─────────────────────────
+function Receipt({ data, biz, onClose }) {
+  const isIn = data.kind === "in";
+  const printIt = () => window.print();
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-3 print:bg-white print:p-0" onClick={onClose}>
+      <style>{`@media print { body * { visibility: hidden; } #receipt, #receipt * { visibility: visible; } #receipt { position: absolute; left: 0; top: 0; width: 100%; } .no-print { display: none !important; } }`}</style>
+      <div className="my-4 w-full max-w-sm rounded-2xl bg-white p-5 text-sm" style={{ ...font, color: INK }} onClick={(e) => e.stopPropagation()}>
+        <div id="receipt">
+          <div className="flex items-start justify-between border-b pb-2" style={{ borderColor: "#E5E9F2" }}>
+            <div>
+              <div className="text-base font-extrabold" style={{ color: BLUE }}>{biz.name || "Today What Todo"}</div>
+              {biz.address && <div className="text-xs text-slate-500">{biz.address}</div>}
+              {biz.phone && <div className="text-xs text-slate-500">โทร {biz.phone}</div>}
+              {biz.taxId && <div className="text-xs text-slate-500">เลขผู้เสียภาษี {biz.taxId}</div>}
+            </div>
+            <div className="rounded-lg px-2 py-1 text-xs font-bold text-white" style={{ background: isIn ? "#1E8E5A" : "#B4700F" }}>{isIn ? "ใบเสร็จรับเงิน" : "ใบสำคัญจ่าย"}</div>
+          </div>
+          <div className="mt-2 flex justify-between text-xs text-slate-500">
+            <span>เลขที่ {data.no}</span><span>วันที่ {data.date}</span>
+          </div>
+          <div className="mt-2 text-sm"><span className="text-slate-500">{isIn ? "รับเงินจาก" : "จ่ายเงินให้"}: </span><span className="font-semibold">{data.party}</span></div>
+          <table className="mt-3 w-full text-sm">
+            <thead><tr className="text-left text-xs text-slate-400"><th className="pb-1">รายการ</th><th className="pb-1 text-right">จำนวนเงิน</th></tr></thead>
+            <tbody>
+              {data.items.map((it, i) => (
+                <tr key={i} className="border-t" style={{ borderColor: "#EEF2FA" }}><td className="py-1 pr-2">{it.label}</td><td className="py-1 text-right">{baht(it.amount)}</td></tr>
+              ))}
+            </tbody>
+            <tfoot><tr className="border-t font-bold" style={{ borderColor: "#E5E9F2" }}><td className="py-1.5">รวมทั้งสิ้น</td><td className="py-1.5 text-right" style={{ color: BLUE }}>{baht(data.total)}</td></tr></tfoot>
+          </table>
+          {data.note && <div className="mt-2 text-xs text-slate-500">{data.note}</div>}
+          {isIn && biz.promptpay && <div className="mt-1 text-xs text-slate-500">พร้อมเพย์: {biz.promptpay}</div>}
+          <div className="mt-6 flex justify-between text-xs text-slate-400">
+            <div className="text-center">.............................<br />ผู้รับเงิน</div>
+            <div className="text-center">.............................<br />ผู้จ่ายเงิน</div>
+          </div>
+        </div>
+        <div className="no-print mt-4 flex gap-2">
+          <button onClick={printIt} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>พิมพ์ / บันทึก PDF</button>
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ปิด</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── หน้าให้ครูกรอกข้อมูลเอง (public /teacher) ────────────────────
+function TeacherJoinPage() {
+  const [f, setF] = useState({ name: "", phone: "", lineId: "", bank: "", acctNo: "", acctName: "", promptpay: "" });
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const submit = async () => {
+    if (!f.name.trim()) { setErr("กรุณากรอกชื่อ (ให้ตรงกับชื่อครูในระบบ)"); return; }
+    try { await submitTeacherReg(f); setDone(true); } catch (e) { setErr("ส่งไม่สำเร็จ: " + (e.message || e)); }
+  };
+  const inp = { ...font, border: "1px solid #D7E0F3" };
+  if (done) return (
+    <div className="flex min-h-screen items-center justify-center p-6" style={{ ...font, background: "#F4F7FD", color: INK }}>
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center" style={{ border: "1px solid #D7E0F3" }}>
+        <div className="text-lg font-bold" style={{ color: BLUE }}>ส่งข้อมูลแล้ว ✓</div>
+        <div className="mt-1 text-sm text-slate-500">ขอบคุณครับ ทางโรงเรียนจะอัปเดตข้อมูลให้</div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="min-h-screen p-5" style={{ ...font, background: "#F4F7FD", color: INK }}>
+      <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;800&display=swap" rel="stylesheet" />
+      <div className="mx-auto max-w-sm">
+        <div className="mb-3 text-center">
+          <div className="text-xl font-extrabold" style={{ color: BLUE }}>ลงทะเบียนข้อมูลครู</div>
+          <div className="text-sm text-slate-500">Today What Todo · กรอกชื่อให้ตรงกับที่ใช้สอน</div>
+        </div>
+        <div className="space-y-2 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+          {[["name", "ชื่อ (ตามที่ใช้ในระบบ) *"], ["phone", "เบอร์โทร"], ["lineId", "LINE ID"], ["bank", "ธนาคาร"], ["acctNo", "เลขบัญชี"], ["acctName", "ชื่อบัญชี"], ["promptpay", "พร้อมเพย์ (เบอร์/บัตรปชช.)"]].map(([k, label]) => (
+            <label key={k} className="block text-xs text-slate-500">{label}
+              <input value={f[k]} onChange={set(k)} className="mt-0.5 w-full rounded-lg px-2 py-2 text-sm" style={inp} />
+            </label>
+          ))}
+          {err && <div className="text-xs" style={{ color: "#B42318" }}>{err}</div>}
+          <button onClick={submit} className="mt-1 w-full rounded-xl py-2.5 font-semibold text-white" style={{ background: BLUE }}>ส่งข้อมูล</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── คลาสกลุ่ม (เพิ่ม/ลดคนได้) ────────────────────────────────────
+function GroupClasses({ groups, students, teachers, courses, onCreate, onAddMember, onRemoveMember, onDelete, onPick }) {
+  const [openForm, setOpenForm] = useState(false);
+  const [type, setType] = useState("ติว");
+  const [name, setName] = useState("");
+  const [teacher, setTeacher] = useState(teachers[0]?.id || "");
+  const [startDate, setStartDate] = useState(toInput(today));
+  const [time, setTime] = useState("18:00");
+  const [cost, setCost] = useState(500);
+  const [openId, setOpenId] = useState(null);
+  const [addSel, setAddSel] = useState("");
+  const TIMES = []; for (let h = 8; h <= 22; h++) { TIMES.push(`${String(h).padStart(2, "0")}:00`); TIMES.push(`${String(h).padStart(2, "0")}:30`); }
+  const count = type === "ติว" ? 10 : 4;
+  const course = type === "ติว" ? "ติวเทคโนโลยี กลุ่ม" : "ทำเพลง";
+  const nameOf = (id) => { const st = students.find((x) => x.id === id); return st ? `${st.nick}${st.first ? " " + st.first : ""}` : id; };
+  const create = () => {
+    if (!teacher || !startDate) return;
+    const id = onCreate({ name, course, teacher, startDate, time, count, costPerSession: Number(cost) || 0 });
+    setOpenForm(false); setName(""); setOpenId(id);
+  };
+  const sel = { ...font, border: "1px solid #D7E0F3" };
+  return (
+    <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold" style={{ color: BLUE }}>คลาสกลุ่ม</h2>
+        <button onClick={() => setOpenForm((v) => !v)} className="rounded-full px-3 py-1 text-sm font-medium text-white" style={{ background: openForm ? INK : BLUE }}>{openForm ? "ปิด" : "+ สร้างกลุ่ม"}</button>
+      </div>
+
+      {openForm && (
+        <div className="mb-3 rounded-xl p-3" style={{ background: BLUE_SOFT }}>
+          <div className="mb-2 flex gap-1.5">
+            {["ติว", "ทำเพลง"].map((tp) => (
+              <button key={tp} onClick={() => { setType(tp); setCost(500); }} className="rounded-full px-3 py-1 text-sm font-medium" style={type === tp ? { background: BLUE, color: "#fff" } : { background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>
+                {tp === "ติว" ? "ติวเทคโนโลยี (10 คาบ)" : "ทำเพลง (4 คาบ)"}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <label className="col-span-2">ชื่อกลุ่ม (เว้นว่างได้)
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`กลุ่ม${type} ...`} className="mt-0.5 w-full rounded-md px-2 py-1.5" style={sel} />
+            </label>
+            <label>ครู
+              <select value={teacher} onChange={(e) => setTeacher(e.target.value)} className="mt-0.5 w-full rounded-md px-2 py-1.5" style={sel}>
+                {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            </label>
+            <label>ต้นทุน/ค่าสอนต่อคาบ
+              <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} className="mt-0.5 w-full rounded-md px-2 py-1.5" style={sel} />
+            </label>
+            <label>เริ่มวันที่
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="mt-0.5 w-full rounded-md px-2 py-1.5" style={sel} />
+            </label>
+            <label>เวลา
+              <select value={time} onChange={(e) => setTime(e.target.value)} className="mt-0.5 w-full rounded-md px-2 py-1.5" style={sel}>
+                {TIMES.map((t) => <option key={t} value={t}>{t} น.</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="mt-1 text-xs text-slate-500">คอร์ส: {course} · {count} คาบ · {baht(Number(cost) || 0)}/คาบ</div>
+          <button onClick={create} className="mt-2 w-full rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>สร้างกลุ่ม แล้วค่อยเพิ่มนักเรียน</button>
+        </div>
+      )}
+
+      {groups.length === 0 && !openForm && <div className="py-4 text-center text-sm text-slate-400">ยังไม่มีคลาสกลุ่ม</div>}
+
+      <div className="space-y-2">
+        {groups.map((g) => {
+          const exp = openId === g.id;
+          const notMembers = students.filter((st) => !g.members.includes(st.id));
+          return (
+            <div key={g.id} className="overflow-hidden rounded-xl" style={{ border: "1px solid #D7E0F3" }}>
+              <button onClick={() => setOpenId(exp ? null : g.id)} className="flex w-full items-center px-3 py-2 text-left" style={{ background: BLUE_SOFT }}>
+                <ChevronRight size={14} className="mr-1 shrink-0 text-slate-400" style={{ transform: exp ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+                <div className="flex-1">
+                  <div className="text-sm font-semibold">{g.name}</div>
+                  <div className="text-xs text-slate-500">{g.course} · {g.teacher} · {g.count} คาบ · {baht(g.costPerSession)}/คาบ · {g.members.length} คน</div>
+                </div>
+              </button>
+              {exp && (
+                <div className="px-3 py-2">
+                  {g.members.length === 0 && <div className="py-1 text-xs text-slate-400">ยังไม่มีสมาชิก</div>}
+                  {g.members.map((mid) => (
+                    <div key={mid} className="flex items-center gap-2 py-1 text-sm" style={{ borderBottom: "1px solid #EEF2FA" }}>
+                      <button onClick={() => onPick(mid)} className="flex-1 text-left font-medium" style={{ color: BLUE }}>{nameOf(mid)}</button>
+                      <button onClick={() => onRemoveMember(g.id, mid)} className="rounded-md px-2 py-0.5 text-xs" style={{ background: "#FDE8E8", color: "#B42318" }}>นำออก</button>
+                    </div>
+                  ))}
+                  <div className="mt-2 flex gap-1.5">
+                    <select value={addSel} onChange={(e) => setAddSel(e.target.value)} className="flex-1 rounded-md px-2 py-1.5 text-sm" style={sel}>
+                      <option value="">+ เลือกนักเรียนเพิ่มเข้ากลุ่ม…</option>
+                      {notMembers.map((st) => <option key={st.id} value={st.id}>{st.nick} {st.first} (#{st.id})</option>)}
+                    </select>
+                    <button onClick={() => { if (addSel) { onAddMember(g.id, addSel); setAddSel(""); } }} className="rounded-md px-3 py-1.5 text-sm font-semibold text-white" style={{ background: BLUE }}>เพิ่ม</button>
+                  </div>
+                  <button onClick={() => onDelete(g.id)} className="mt-2 text-xs" style={{ color: "#B42318" }}>ลบกลุ่มนี้</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-1.5 text-xs text-slate-500">เพิ่ม/ลดคนได้ตลอด · เพิ่มคน = สร้างคาบให้คนนั้นตามวัน-เวลากลุ่ม · นำออก = ลบเฉพาะคาบที่ยังไม่เรียน</p>
+    </section>
+  );
+}
+
+// ─── แท็บห้องเรียน (ผังห้อง + จัดห้องให้คาบจริง) ─────────────────────
+const ROOM_PALETTE = ["#1656D6", "#1E8E5A", "#B4700F", "#8A3FFC", "#D5468B", "#0EA5B7", "#E8590C", "#4C6EF5"];
+const roomEmoji = (course) => { const c = course || ""; if (c.includes("เทคโน")) return "💻"; if (/mix|master/i.test(c)) return "🎧"; if (c.includes("เพลง")) return "🎹"; if (c.includes("ติว")) return "📚"; return "🎵"; };
+const fileToImg = (file, max = 640) => new Promise((res) => {
+  const r = new FileReader();
+  r.onload = () => { const img = new Image(); img.onload = () => {
+    let { width: w, height: h } = img; if (w > max || h > max) { const k = Math.min(max / w, max / h); w = Math.round(w * k); h = Math.round(h * k); }
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h; cv.getContext("2d").drawImage(img, 0, 0, w, h);
+    res(cv.toDataURL("image/jpeg", 0.8)); }; img.src = r.result; };
+  r.readAsDataURL(file);
+});
+
+function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSetRoom, onPick, say }) {
+  const floors = layout.floors || [];
+  const [curFloor, setCurFloor] = useState(floors[0]?.id);
+  const [mode, setMode] = useState("layout");
+  const [date, setDate] = useState(toInput(today));
+  const [time, setTime] = useState("18:00");
+  const [editRoom, setEditRoom] = useState(null); // roomId
+  const [viewRoom, setViewRoom] = useState(null); // roomId
+  const [uRoom, setURoom] = useState(""); const [uFrom, setUFrom] = useState("18:00"); const [uTo, setUTo] = useState("19:00"); const [uLabel, setULabel] = useState(""); const [warn, setWarn] = useState(null);
+  const TIMES = []; for (let h = 8; h <= 22; h++) { TIMES.push(`${String(h).padStart(2, "0")}:00`); TIMES.push(`${String(h).padStart(2, "0")}:30`); }
+  const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+  const DUR = 60;
+  const cur = floors.find((f) => f.id === curFloor) || floors[0];
+  const colorOf = (fid) => ROOM_PALETTE[Math.max(0, floors.findIndex((f) => f.id === fid)) % ROOM_PALETTE.length];
+  const allRooms = floors.flatMap((f) => f.rooms.map((r) => ({ ...r, floorName: f.name })));
+  const roomById = (id) => allRooms.find((r) => r.id === id);
+  const stName = (id) => { const st = students.find((x) => x.id === id); return st ? `${st.nick}${st.first ? " " + st.first : ""} #${id}` : "#" + id; };
+  const sMin = (s) => s.at.getHours() * 60 + s.at.getMinutes();
+  const sTime = (s) => `${String(s.at.getHours()).padStart(2, "0")}:${String(s.at.getMinutes()).padStart(2, "0")}`;
+  const daySessions = sessions.filter((s) => toInput(s.at) === date);
+
+  const setFloors = (fn) => setLayout({ ...layout, floors: fn(floors) });
+  const updateRoom = (rid, patch) => setFloors((fs) => fs.map((f) => ({ ...f, rooms: f.rooms.map((r) => (r.id === rid ? { ...r, ...patch } : r)) })));
+  const addRoom = () => { const id = "rm" + Date.now(); setFloors((fs) => fs.map((f) => (f.id === curFloor ? { ...f, rooms: [...f.rooms, { id, name: "ห้องใหม่", x: 20, y: 20, w: 150, h: 110, imgs: [] }] } : f))); };
+  const addFloor = () => { const n = prompt("ชื่อชั้นใหม่", "ชั้น " + (floors.length + 1)); if (n === null) return; const id = "fl" + Date.now(); setLayout({ ...layout, floors: [...floors, { id, name: n || "ชั้น " + (floors.length + 1), rooms: [] }] }); };
+  const renameFloor = (f) => { const n = prompt("เปลี่ยนชื่อชั้น", f.name); if (n) setFloors((fs) => fs.map((x) => (x.id === f.id ? { ...x, name: n } : x))); };
+  const deleteRoom = (rid) => { setFloors((fs) => fs.map((f) => ({ ...f, rooms: f.rooms.filter((r) => r.id !== rid) }))); daySessions.forEach(() => {}); sessions.forEach((s) => { if (s.room === rid) onSetRoom(s.id, ""); }); setEditRoom(null); };
+
+  const busyAt = (rid, t) => {
+    const min = toMin(t);
+    const s = daySessions.find((x) => x.room === rid && min >= sMin(x) && min < sMin(x) + DUR);
+    if (s) return { who: `${stName(s.studentId)} · ${sTime(s)}`, lesson: true };
+    const u = (usage || []).find((x) => x.roomId === rid && x.date === date && min >= toMin(x.from) && min < toMin(x.to));
+    if (u) return { who: `${u.label} · ${u.from}-${u.to}`, lesson: false };
+    return null;
+  };
+
+  // ลาก/ปรับขนาดห้อง (โหมดจัดผัง)
+  const onDown = (e, room) => {
+    if (mode !== "layout") return;
+    const box = e.currentTarget; const resize = e.target.dataset.handle === "1";
+    box.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, ox = room.x, oy = room.y, ow = room.w, oh = room.h; box._moved = false;
+    const move = (ev) => { const dx = ev.clientX - sx, dy = ev.clientY - sy; if (Math.abs(dx) + Math.abs(dy) > 3) box._moved = true;
+      if (resize) { box.style.width = Math.max(70, ow + dx) + "px"; box.style.height = Math.max(60, oh + dy) + "px"; }
+      else { box.style.left = Math.max(0, ox + dx) + "px"; box.style.top = Math.max(0, oy + dy) + "px"; } };
+    const up = () => { box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up);
+      updateRoom(room.id, { x: parseInt(box.style.left) || ox, y: parseInt(box.style.top) || oy, w: parseInt(box.style.width) || ow, h: parseInt(box.style.height) || oh }); };
+    box.addEventListener("pointermove", move); box.addEventListener("pointerup", up);
+  };
+
+  const addUsage = () => {
+    setWarn(null);
+    if (!uRoom) { say("เลือกห้องก่อน"); return; }
+    if (!uLabel.trim()) { say("ใส่ว่าใช้ทำอะไร"); return; }
+    if (toMin(uTo) <= toMin(uFrom)) { say("เวลาสิ้นสุดต้องหลังเวลาเริ่ม"); return; }
+    const hit = daySessions.filter((s) => s.room === uRoom && toMin(uFrom) < sMin(s) + DUR && toMin(uTo) > sMin(s)).sort((a, b) => a.at - b.at);
+    if (hit.length) { setWarn({ room: roomById(uRoom)?.name, list: hit.map((s) => `${roomEmoji(s.course)} ${stName(s.studentId)} · ${sTime(s)}`) }); return; }
+    const clashU = (usage || []).find((u) => u.roomId === uRoom && u.date === date && toMin(uFrom) < toMin(u.to) && toMin(uTo) > toMin(u.from));
+    if (clashU && !window.confirm(`ช่วงนี้มีการจองทั่วไปอยู่แล้ว (${clashU.label} ${clashU.from}-${clashU.to})\nยืนยันจองซ้อนไหม?`)) return;
+    setUsage([...(usage || []), { id: "us" + Date.now(), roomId: uRoom, date, from: uFrom, to: uTo, label: uLabel.trim() }]);
+    setULabel(""); say("เพิ่มการใช้ห้องแล้ว");
+  };
+  const removeUsage = (id) => setUsage((usage || []).filter((u) => u.id !== id));
+
+  const roomOpts = (val) => (
+    <>
+      <option value="">— ห้อง —</option>
+      <option value="online">🌐 ออนไลน์</option>
+      {allRooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.floorName})</option>)}
+    </>
+  );
+  const inp = { ...font, border: "1px solid #D7E0F3" };
+
+  return (
+    <div>
+      {/* floors */}
+      <div className="mb-3 flex flex-wrap gap-2">
+        {floors.map((f) => { const c = colorOf(f.id); const on = f.id === curFloor;
+          return <button key={f.id} onClick={() => setCurFloor(f.id)} onDoubleClick={() => renameFloor(f)}
+            className="flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold" style={on ? { background: c, color: "#fff" } : { background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: c }} />{f.name}
+          </button>; })}
+        <button onClick={addFloor} className="rounded-full px-3 py-1 text-sm font-medium" style={{ background: BLUE_SOFT, color: BLUE }}>+ ชั้น</button>
+      </div>
+
+      {/* controls */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="inline-flex overflow-hidden rounded-xl" style={{ border: "1px solid #D7E0F3" }}>
+          {[["layout", "จัดผัง"], ["book", "ดูการใช้ห้อง"]].map(([m, l]) => (
+            <button key={m} onClick={() => setMode(m)} className="px-3 py-1.5 text-sm font-semibold" style={mode === m ? { background: BLUE, color: "#fff" } : { background: "#fff", color: INK }}>{l}</button>
+          ))}
+        </div>
+        <button onClick={addRoom} className="rounded-lg px-3 py-1.5 text-sm font-semibold text-white" style={{ background: BLUE }}>+ เพิ่มห้อง</button>
+        <span className="flex-1" />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg px-2 py-1.5 text-sm" style={inp} />
+        <select value={time} onChange={(e) => setTime(e.target.value)} className="rounded-lg px-2 py-1.5 text-sm" style={inp}>{TIMES.map((t) => <option key={t} value={t}>{t} น.</option>)}</select>
+      </div>
+
+      {/* stage */}
+      <div className="relative w-full overflow-hidden rounded-2xl" style={{ height: "56vh", minHeight: 340, border: "1px solid #D7E0F3", background: "repeating-linear-gradient(0deg,#EEF2FA 0 1px,transparent 1px 28px), repeating-linear-gradient(90deg,#EEF2FA 0 1px,transparent 1px 28px), #fff", touchAction: "none" }}>
+        {cur?.rooms.map((room) => {
+          const c = colorOf(cur.id);
+          const bk = mode === "book" ? busyAt(room.id, time) : null;
+          const border = mode === "book" ? (bk ? "#B42318" : "#1E8E5A") : c;
+          const ses = daySessions.filter((s) => s.room === room.id).sort((a, b) => a.at - b.at);
+          const us = (usage || []).filter((u) => u.roomId === room.id && u.date === date).sort((a, b) => toMin(a.from) - toMin(b.from));
+          const lines = [...ses.map((s) => `${roomEmoji(s.course)} ${stName(s.studentId)} · ${sTime(s)}`), ...us.map((u) => `📌 ${u.label} · ${u.from}-${u.to}`)];
+          const veil = mode === "book" ? (bk ? "rgba(253,232,232,.80)" : "rgba(228,246,236,.80)") : "rgba(255,255,255,.74)";
+          return (
+            <div key={room.id} onPointerDown={(e) => onDown(e, room)} onClick={(e) => { if (e.currentTarget._moved) { e.currentTarget._moved = false; return; } mode === "layout" ? setEditRoom(room.id) : setViewRoom(room.id); }}
+              className="absolute flex flex-col overflow-hidden rounded-xl p-1.5" style={{ left: room.x, top: room.y, width: room.w, height: room.h, border: `2px solid ${border}`, color: c, cursor: mode === "layout" ? "grab" : "pointer", backgroundImage: room.imgs?.[0] ? `url(${room.imgs[0]})` : "none", backgroundSize: "cover", backgroundPosition: "center" }}>
+              <div className="absolute inset-0" style={{ background: veil }} />
+              <div className="relative font-bold" style={{ fontSize: 13, lineHeight: 1.15 }}>{room.name}{room.imgs?.length ? <span style={{ fontWeight: 400, opacity: .55 }}> 🖼{room.imgs.length}</span> : ""}</div>
+              {mode === "book" && <div className="relative" style={{ fontSize: 11, fontWeight: 600, color: bk ? "#B42318" : "#1E8E5A" }}>{bk ? "⛔ ไม่ว่าง" : "✅ ว่าง"} · {time}</div>}
+              {lines.length ? <div className="relative mt-auto" style={{ fontSize: 11, opacity: .85, lineHeight: 1.25 }}>{lines.slice(0, 4).map((t, i) => <div key={i}>{t}</div>)}{lines.length > 4 ? <div>…อีก {lines.length - 4}</div> : null}</div>
+                : mode === "layout" ? <div className="relative" style={{ fontSize: 11, opacity: .5 }}>แตะเพื่อตั้งค่า/ใส่รูป</div> : null}
+              {mode === "layout" && <div data-handle="1" className="absolute" style={{ right: 2, bottom: 2, width: 16, height: 16, cursor: "nwse-resize", background: `linear-gradient(135deg,transparent 50%,${c} 50%)`, borderRadius: "0 0 8px 0" }} />}
+            </div>
+          );
+        })}
+        {cur?.rooms.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">ยังไม่มีห้องในชั้นนี้ · กด "+ เพิ่มห้อง"</div>}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-3 text-xs">
+        <span className="inline-flex items-center gap-1"><i style={{ width: 11, height: 11, borderRadius: 3, background: "#1E8E5A", display: "inline-block" }} /> ว่าง</span>
+        <span className="inline-flex items-center gap-1"><i style={{ width: 11, height: 11, borderRadius: 3, background: "#B42318", display: "inline-block" }} /> ไม่ว่าง</span>
+        <span className="text-slate-400">โหมดจัดผัง = สีตามชั้น · ลากย้าย/ปรับมุมขวาล่าง · แตะห้องเพื่อตั้งชื่อ/ใส่รูป/ลบ</span>
+      </div>
+
+      {/* schedule panel */}
+      <section className="mt-3 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+        <h3 className="text-sm font-semibold" style={{ color: BLUE }}>คาบเรียนวันที่ {date} (จากตาราง)</h3>
+        <div className="my-2 rounded-lg px-2 py-1.5 text-xs" style={{ background: BLUE_SOFT, color: BLUE }}>🔒 เวลาเรียนของเด็กล็อกไว้ — เปลี่ยน "ห้อง" ได้ที่นี่เลย · ย้าย "วัน/เวลา" ทำที่หน้าตารางสอน · เลือกวันด้านบนเพื่อจัดห้องล่วงหน้า · มี 🌐 ออนไลน์</div>
+        {daySessions.length === 0 ? <div className="py-2 text-sm text-slate-400">วันนี้ไม่มีคาบ (เปลี่ยนวันด้านบนได้)</div> :
+          daySessions.slice().sort((a, b) => a.at - b.at).map((s) => (
+            <div key={s.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
+              <span className="w-12 shrink-0 font-bold">{sTime(s)}</span>
+              <button onClick={() => onPick(s.studentId)} className="min-w-0 flex-1 truncate text-left" style={{ color: INK }}>{roomEmoji(s.course)} {stName(s.studentId)} · {s.course}</button>
+              <select value={s.room || ""} onChange={(e) => onSetRoom(s.id, e.target.value)} className="shrink-0 rounded-lg px-2 py-1 text-xs" style={{ ...inp, maxWidth: "46%" }}>{roomOpts(s.room)}</select>
+            </div>
+          ))}
+      </section>
+
+      {/* usage panel */}
+      <section className="mt-3 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+        <h3 className="text-sm font-semibold" style={{ color: BLUE }}>จองใช้ห้องทั่วไป (เลือกเวลาเองได้)</h3>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <select value={uRoom} onChange={(e) => setURoom(e.target.value)} className="flex-1 rounded-lg px-2 py-1.5 text-sm" style={{ ...inp, minWidth: 120 }}>
+            <option value="">เลือกห้อง</option>
+            {allRooms.map((r) => <option key={r.id} value={r.id}>{r.name} ({r.floorName})</option>)}
+          </select>
+          <select value={uFrom} onChange={(e) => setUFrom(e.target.value)} className="rounded-lg px-2 py-1.5 text-sm" style={inp}>{TIMES.map((t) => <option key={t}>{t}</option>)}</select>
+          <span className="text-xs text-slate-400">ถึง</span>
+          <select value={uTo} onChange={(e) => setUTo(e.target.value)} className="rounded-lg px-2 py-1.5 text-sm" style={inp}>{TIMES.map((t) => <option key={t}>{t}</option>)}</select>
+        </div>
+        <input value={uLabel} onChange={(e) => setULabel(e.target.value)} placeholder="ใช้ทำอะไร เช่น ซ้อมวง / อัดเสียง / ประชุม" className="mt-2 w-full rounded-lg px-2 py-1.5 text-sm" style={inp} />
+        <button onClick={addUsage} className="mt-2 rounded-lg px-3 py-1.5 text-sm font-semibold text-white" style={{ background: BLUE }}>+ เพิ่มการใช้ห้อง</button>
+        {warn && (
+          <div className="mt-2 rounded-xl p-3" style={{ background: "#FDE8E8", color: "#B42318", border: "2px solid #EE9B9B", fontWeight: 800, fontSize: 14 }}>
+            ⛔ จองไม่ได้ — ห้อง {warn.room} ช่วงนี้มีคาบเรียนอยู่
+            {warn.list.map((t, i) => <div key={i} style={{ fontWeight: 600, fontSize: 13 }}>• {t}</div>)}
+            <div style={{ fontWeight: 600, fontSize: 12, marginTop: 4 }}>คาบเรียนของเด็กสำคัญกว่า ต้องย้ายเด็กออกจากห้องนี้ก่อน (เปลี่ยน "ห้อง" ที่แผงคาบเรียน หรือย้ายวัน/เวลาที่หน้าตาราง) แล้วจึงจองห้องได้</div>
+          </div>
+        )}
+        <div className="mt-2">
+          {(usage || []).filter((u) => u.date === date).sort((a, b) => toMin(a.from) - toMin(b.from)).map((u) => (
+            <div key={u.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
+              <span className="w-12 shrink-0 font-bold">{u.from}</span>
+              <span className="min-w-0 flex-1 truncate">📌 {u.label} · {roomById(u.roomId)?.name || "?"} (ถึง {u.to})</span>
+              <button onClick={() => removeUsage(u.id)} className="shrink-0 rounded-md px-2 py-0.5 text-xs" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบ</button>
+            </div>
+          ))}
+          {(usage || []).filter((u) => u.date === date).length === 0 && <div className="py-1 text-xs text-slate-400">ยังไม่มีการจองใช้ห้องทั่วไปในวันนี้</div>}
+        </div>
+      </section>
+
+      {/* edit room modal */}
+      {editRoom && (() => { const room = roomById(editRoom); if (!room) return null; return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setEditRoom(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-4" style={{ color: INK }} onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-2 text-base font-bold">ตั้งค่าห้อง</h3>
+            <label className="text-xs text-slate-500">ชื่อห้อง<input value={room.name} onChange={(e) => updateRoom(room.id, { name: e.target.value })} className="mt-1 w-full rounded-lg px-2 py-1.5 text-sm" style={inp} /></label>
+            <div className="mt-3 text-xs text-slate-500">รูปในห้อง (เครื่องดนตรี/อุปกรณ์)</div>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {(room.imgs || []).map((src, i) => (
+                <div key={i} className="relative" style={{ width: 64, height: 64, borderRadius: 8, background: `url(${src}) center/cover`, border: "1px solid #D7E0F3" }}>
+                  <button onClick={() => updateRoom(room.id, { imgs: room.imgs.filter((_, k) => k !== i) })} className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full text-xs text-white" style={{ background: "#B42318" }}>×</button>
+                </div>
+              ))}
+            </div>
+            <label className="mt-2 inline-block cursor-pointer rounded-lg px-3 py-1.5 text-sm font-semibold" style={{ background: BLUE_SOFT, color: BLUE }}>
+              + เพิ่มรูป
+              <input type="file" accept="image/*" multiple className="hidden" onChange={async (e) => { const fs = [...e.target.files]; const imgs = []; for (const f of fs) imgs.push(await fileToImg(f)); updateRoom(room.id, { imgs: [...(room.imgs || []), ...imgs] }); e.target.value = ""; }} />
+            </label>
+            <div className="mt-3 flex gap-2">
+              <button onClick={() => setEditRoom(null)} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>เสร็จ</button>
+              <button onClick={() => deleteRoom(room.id)} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบห้อง</button>
+            </div>
+          </div>
+        </div>
+      ); })()}
+
+      {/* view room modal (book) */}
+      {viewRoom && (() => { const room = roomById(viewRoom); if (!room) return null;
+        const ses = daySessions.filter((s) => s.room === room.id).sort((a, b) => a.at - b.at);
+        const us = (usage || []).filter((u) => u.roomId === room.id && u.date === date).sort((a, b) => toMin(a.from) - toMin(b.from));
+        return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setViewRoom(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-4" style={{ color: INK, maxHeight: "88vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-2 text-base font-bold">ห้อง {room.name}</h3>
+            <div className="flex flex-wrap gap-2">{(room.imgs || []).map((src, i) => <div key={i} style={{ width: 64, height: 64, borderRadius: 8, background: `url(${src}) center/cover`, border: "1px solid #D7E0F3" }} />)}{!room.imgs?.length && <span className="text-xs text-slate-400">ยังไม่มีรูป</span>}</div>
+            <div className="mt-3 text-sm font-semibold">คาบเรียนในห้องนี้ ({date})</div>
+            {ses.length ? ses.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
+                <span className="w-12 shrink-0 font-bold">{sTime(s)}</span>
+                <span className="min-w-0 flex-1 truncate">{stName(s.studentId)} · {s.course}</span>
+                <select value={s.room || ""} onChange={(e) => onSetRoom(s.id, e.target.value)} className="shrink-0 rounded-lg px-2 py-1 text-xs" style={inp}>{roomOpts(s.room)}</select>
+              </div>
+            )) : <div className="py-1 text-xs text-slate-400">ไม่มีคาบในห้องนี้</div>}
+            <div className="mt-3 text-sm font-semibold">การใช้ห้องทั่วไป</div>
+            {us.length ? us.map((u) => (
+              <div key={u.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid #EEF2FA" }}>
+                <span className="w-12 shrink-0 font-bold">{u.from}</span><span className="min-w-0 flex-1 truncate">{u.label} (ถึง {u.to})</span>
+                <button onClick={() => removeUsage(u.id)} className="shrink-0 rounded-md px-2 py-0.5 text-xs" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบ</button>
+              </div>
+            )) : <div className="py-1 text-xs text-slate-400">ไม่มีการใช้ห้องทั่วไป</div>}
+            <button onClick={() => setViewRoom(null)} className="mt-3 w-full rounded-lg py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ปิด</button>
+          </div>
+        </div>
+      ); })()}
     </div>
   );
 }
