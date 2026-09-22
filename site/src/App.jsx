@@ -1322,6 +1322,20 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
           ))}
         </div>
         <p className="mt-1.5 text-xs text-slate-500">ข้อมูลนี้จะขึ้นหัวใบเสร็จรับเงิน/ใบจ่ายเงิน</p>
+        <div className="mt-3">
+          <div className="text-xs text-slate-500">QR รับเงิน — อัปโหลดรูป QR พร้อมเพย์/ธนาคารของร้าน (ถ้าอัป จะใช้รูปนี้แทนการสร้าง QR อัตโนมัติ)</div>
+          <div className="mt-1 flex items-center gap-3">
+            {biz.qrImgUrl ? <img src={biz.qrImgUrl} alt="qr" className="h-20 w-20 rounded-lg object-contain" style={{ border: "1px solid #D7E0F3" }} /> : <div className="flex h-20 w-20 items-center justify-center rounded-lg text-center text-xs text-slate-400" style={{ border: "1px dashed #D7E0F3" }}>ยังไม่มีรูป</div>}
+            <div className="flex flex-col gap-1.5">
+              <label className="cursor-pointer rounded-lg px-3 py-1.5 text-sm font-semibold" style={{ background: BLUE_SOFT, color: BLUE }}>
+                {biz.qrImgUrl ? "เปลี่ยนรูป QR" : "อัปโหลดรูป QR"}
+                <input type="file" accept="image/*" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; try { const up = await uploadSlip(f); setBiz({ ...biz, qrImgUrl: up.url }); say("อัปโหลดรูป QR แล้ว"); } catch (err) { say("อัปโหลดไม่สำเร็จ: " + (err.message || err)); } e.target.value = ""; }} />
+              </label>
+              {biz.qrImgUrl && <button onClick={() => setBiz({ ...biz, qrImgUrl: "" })} className="rounded-lg px-3 py-1.5 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบรูป QR</button>}
+            </div>
+          </div>
+          <div className="mt-1 text-xs text-slate-400">* ต้องรัน SQL ที่เก็บรูป (bucket slips) ก่อน ถึงจะอัปโหลดได้</div>
+        </div>
       </section>
 
       <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
@@ -2109,27 +2123,28 @@ function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSe
 function PayQR({ biz, student, defaultAmount, onClose }) {
   const [amount, setAmount] = useState(defaultAmount || "");
   const pp = (biz?.promptpay || "").trim();
+  const qrImg = (biz?.qrImgUrl || "").trim();
   const payload = pp ? promptpayPayload(pp, Number(amount) || 0) : "";
-  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?name=${encodeURIComponent(student?.nick || "")}&id=${student?.id || ""}&amt=${Number(amount) || ""}&pp=${encodeURIComponent(pp)}` : "";
+  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?name=${encodeURIComponent(student?.nick || "")}&id=${student?.id || ""}&amt=${Number(amount) || ""}&pp=${encodeURIComponent(pp)}&qr=${encodeURIComponent(qrImg)}` : "";
   const copy = (t) => { try { navigator.clipboard.writeText(t); } catch (e) {} };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={onClose}>
       <div className="w-full max-w-xs rounded-2xl bg-white p-4 text-center" style={{ ...font, color: INK }} onClick={(e) => e.stopPropagation()}>
         <div className="text-base font-bold" style={{ color: BLUE }}>QR รับเงิน (พร้อมเพย์)</div>
         {student && <div className="text-sm text-slate-500">{student.nick} {student.first || ""} #{student.id}</div>}
-        {!pp ? (
-          <div className="my-4 rounded-lg p-3 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ยังไม่ได้ตั้งเลขพร้อมเพย์ — ไปใส่ที่ "ข้อมูลธุรกิจ" ในหลังบ้านก่อนครับ</div>
+        {!pp && !qrImg ? (
+          <div className="my-4 rounded-lg p-3 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ยังไม่ได้ตั้ง QR — ไปที่ "ข้อมูลธุรกิจ" ในหลังบ้าน แล้วอัปรูป QR หรือใส่เลขพร้อมเพย์ก่อนครับ</div>
         ) : (
           <>
             <div className="my-3 flex justify-center">
-              <div className="rounded-xl bg-white p-3" style={{ border: "1px solid #D7E0F3" }}><QRCodeSVG value={payload} size={190} level="M" /></div>
+              <div className="rounded-xl bg-white p-3" style={{ border: "1px solid #D7E0F3" }}>{qrImg ? <img src={qrImg} alt="QR" style={{ width: 190, height: 190, objectFit: "contain" }} /> : <QRCodeSVG value={payload} size={190} level="M" />}</div>
             </div>
             <div className="mb-2 flex items-center justify-center gap-2 text-sm">
               <span className="text-slate-500">ยอด</span>
               <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="ระบุจำนวน" className="w-28 rounded-lg px-2 py-1 text-center" style={{ ...font, border: "1px solid #D7E0F3" }} />
               <span className="text-slate-500">บาท</span>
             </div>
-            <div className="text-xs text-slate-500">พร้อมเพย์: {pp}</div>
+            {qrImg ? <div className="text-xs text-slate-500">ใช้รูป QR ที่อัปไว้ · ระบุยอดในแอปธนาคารตอนสแกน</div> : <div className="text-xs text-slate-500">พร้อมเพย์: {pp}</div>}
             <div className="mt-3 flex flex-col gap-2">
               <button onClick={() => copy(payLink)} className="rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>คัดลอกลิงก์จ่ายเงิน (เด็กเปิดแล้วเห็น QR + อัปสลิปได้)</button>
               <div className="text-xs text-slate-400">แคปหน้าจอ QR ส่งให้เด็ก หรือส่งลิงก์ด้านบนก็ได้</div>
@@ -2146,6 +2161,7 @@ function PayQR({ biz, student, defaultAmount, onClose }) {
 function PaySlipPage() {
   const q = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
   const pp = q.get("pp") || "";
+  const qrImg = q.get("qr") || "";
   const [name, setName] = useState(q.get("name") || "");
   const [sid, setSid] = useState(q.get("id") || "");
   const [amount, setAmount] = useState(q.get("amt") || "");
@@ -2183,11 +2199,11 @@ function PaySlipPage() {
           <div className="text-xl font-extrabold" style={{ color: BLUE }}>ชำระเงิน · ส่งสลิป</div>
           <div className="text-sm text-slate-500">Today What Todo</div>
         </div>
-        {pp && (
+        {(qrImg || pp) && (
           <div className="mb-3 rounded-2xl bg-white p-4 text-center" style={{ border: "1px solid #D7E0F3" }}>
-            <div className="mb-2 text-sm font-semibold">สแกนจ่ายพร้อมเพย์</div>
-            <div className="flex justify-center"><div className="rounded-xl p-2" style={{ border: "1px solid #D7E0F3" }}><QRCodeSVG value={payload} size={180} level="M" /></div></div>
-            {amount ? <div className="mt-2 text-sm">ยอด {Number(amount).toLocaleString()} บาท</div> : null}
+            <div className="mb-2 text-sm font-semibold">สแกนจ่ายเงิน</div>
+            <div className="flex justify-center"><div className="rounded-xl p-2" style={{ border: "1px solid #D7E0F3" }}>{qrImg ? <img src={qrImg} alt="QR" style={{ width: 180, height: 180, objectFit: "contain" }} /> : <QRCodeSVG value={payload} size={180} level="M" />}</div></div>
+            {amount ? <div className="mt-2 text-sm">ยอด {Number(amount).toLocaleString()} บาท</div> : (qrImg ? <div className="mt-2 text-xs text-slate-400">สแกนแล้วพิมพ์ยอดในแอปธนาคาร</div> : null)}
           </div>
         )}
         <div className="space-y-2 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
@@ -2214,7 +2230,7 @@ function PaymentsPanel({ biz, students, say, onPayQR }) {
   const [zoom, setZoom] = useState(null);
   const reload = () => loadPayments().then(setRows).catch(() => setRows([]));
   useEffect(() => { reload(); }, []);
-  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?pp=${encodeURIComponent((biz?.promptpay || "").trim())}` : "";
+  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?pp=${encodeURIComponent((biz?.promptpay || "").trim())}&qr=${encodeURIComponent((biz?.qrImgUrl || "").trim())}` : "";
   const confirm = async (r) => { await updatePayment(r.id, { status: r.status === "confirmed" ? "pending" : "confirmed" }); reload(); };
   const del = async (r) => { if (!window.confirm("ลบรายการนี้?")) return; await removePayment(r.id); reload(); };
   const byMonth = {};
