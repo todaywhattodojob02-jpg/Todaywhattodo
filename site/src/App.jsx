@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive, submitTeacherReg, loadTeacherRegs, removeTeacherReg } from "./storage.js";
+import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive, submitTeacherReg, loadTeacherRegs, removeTeacherReg, uploadSlip, submitPayment, loadPayments, updatePayment, removePayment } from "./storage.js";
+import { QRCodeSVG } from "qrcode.react";
 import {
   Volume2, SlidersVertical, Phone, MessageCircle, Facebook, Instagram,
   CalendarDays, Users, Wallet, Link2, ChevronRight, X, Award, Copy, Check, Lock, Cloud, CloudOff, DoorOpen,
@@ -7,6 +8,16 @@ import {
 
 // ─── ธีมสีตามโลโก้ ───────────────────────────────────────────
 const BLUE = "#1656D6";
+// ── พร้อมเพย์ QR (มาตรฐาน EMVCo/PromptPay) ──
+const ppTlv = (tag, v) => tag + String(v.length).padStart(2, "0") + v;
+const ppCrc = (str) => { let c = 0xffff; for (let i = 0; i < str.length; i++) { c ^= str.charCodeAt(i) << 8; for (let j = 0; j < 8; j++) c = (c & 0x8000 ? (c << 1) ^ 0x1021 : c << 1) & 0xffff; } return c.toString(16).toUpperCase().padStart(4, "0"); };
+const promptpayPayload = (target, amount) => {
+  const id = String(target || "").replace(/[^0-9]/g, ""); if (!id) return "";
+  const acc = id.length >= 13 ? ppTlv("02", id) : ppTlv("01", ("0000000000000" + id.replace(/^0/, "66")).slice(-13));
+  const merchant = ppTlv("00", "A000000677010111") + acc;
+  let pl = ppTlv("00", "01") + ppTlv("01", amount ? "12" : "11") + ppTlv("29", merchant) + ppTlv("53", "764") + (amount ? ppTlv("54", Number(amount).toFixed(2)) : "") + ppTlv("58", "TH") + "6304";
+  return pl + ppCrc(pl);
+};
 const BLUE_DARK = "#0F44B0";
 const BLUE_SOFT = "#E9F0FE";
 const INK = "#10254F";
@@ -68,6 +79,7 @@ const PIN = import.meta.env.VITE_ADMIN_PIN || "";
 export default function App() {
   if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/join") return <JoinPage />;
   if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/teacher") return <TeacherJoinPage />;
+  if (typeof window !== "undefined" && window.location.pathname.replace(/\/$/, "") === "/pay") return <PaySlipPage />;
   return <AdminApp />;
 }
 
@@ -188,6 +200,7 @@ function Dashboard({ initial, loadErr }) {
   const [layout, setLayout] = useState(initial?.layout || { floors: [{ id: "f1", name: "ชั้น 1", rooms: [] }, { id: "f2", name: "ชั้น 2", rooms: [] }, { id: "f3", name: "ชั้น 3", rooms: [] }] });
   const [usage, setUsage] = useState(initial?.usage || []);
   const [receipt, setReceipt] = useState(null); // ใบเสร็จที่กำลังเปิด
+  const [payQR, setPayQR] = useState(null); // { student, amount }
   const [saveStatus, setSaveStatus] = useState(loadErr ? "error" : "saved"); // saved | saving | error
   const firstRun = useRef(true);
 
@@ -398,10 +411,16 @@ function Dashboard({ initial, loadErr }) {
   const student = students.find((s) => s.id === open);
   const byStudent = (id) => sessions.filter((s) => s.studentId === id).sort((a, b) => a.at - b.at);
 
+  // ส่งข้อความเข้า LINE (ผ่านฟังก์ชันหลังบ้าน /api/notify — เงียบถ้ายังไม่ได้ตั้งค่า)
+  const notifyLine = (text) => { try { fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }).catch(() => {}); } catch (e) {} };
+
   // ปุ่มลา: เลื่อนคาบที่เหลือทั้งหมด (คาบถัดไป + คาบหลังจากนั้น) ไปอีก 7 วัน + จดหมายเหตุการลาได้
   const leave = (id, course, note = "") => {
     const mine = byStudent(id).filter((s) => !s.done && (!course || s.course === course)).sort((a, b) => a.at - b.at);
     if (!mine.length) return;
+    const stu = students.find((x) => x.id === id);
+    const nx = mine[0];
+    notifyLine(`🔔 แจ้งลา — ${stu ? stu.nick + (stu.first ? " " + stu.first : "") : "#" + id} (#${id})\nคอร์ส: ${course || nx.course || "-"}\nคาบเดิม: ${thDate(nx.at)} ${nx.noTime ? "" : thTime(nx.at)}\nเลื่อนคาบที่เหลือ ${mine.length} คาบ ไปอีก 1 สัปดาห์${note ? "\nหมายเหตุ: " + note : ""}`);
     const ids = new Set(mine.map((s) => s.id));
     const firstId = mine[0].id;
     setSessions((all) => all.map((s) => {
@@ -567,7 +586,7 @@ function Dashboard({ initial, loadErr }) {
           <StudentsTab students={students} sessions={sessions} pool={pool} onPick={setOpen} onAdd={(f, open) => addStudent(f, open)} />
         )}
 
-        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} />}
+        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} onPayQR={(student, amount) => setPayQR({ student, amount })} />}
         {tab === "rooms" && <RoomsTab layout={layout} setLayout={setLayout} usage={usage} setUsage={setUsage} sessions={sessions} students={students} onSetRoom={setSessionRoom} onPick={setOpen} say={say} />}
         {tab === "form" && <FormPreview say={say} courses={courses} teachers={teachers.filter((t) => t.status === "Active")} onAccept={acceptRegistration} />}
       </main>
@@ -584,10 +603,12 @@ function Dashboard({ initial, loadErr }) {
           onClose={() => { setOpen(null); setSchedOpen(false); }}
           onLeave={(course, note) => leave(student.id, course, note)} onChangeDate={changeDate} onDone={markDone} onRenew={(c, disc) => renew(student.id, c, disc)}
           onNote={setSessionNote} onScore={setSessionScore} onReschedule={rescheduleFrom} layout={layout} onSetRoom={setSessionRoom} roomLabelOf={roomLabelOf}
-          onReceipt={(b) => setReceipt({ kind: "in", no: `RC-${(b.date || toInput(today)).replace(/-/g, "")}-${student.id}`, date: b.date || toInput(today), party: `${student.nick} ${student.first || ""} ${student.last || ""}`.trim(), items: [{ label: `${b.course} (${b.total} คาบ)${b.discount ? ` · ลด ${b.discount}%` : ""}`, amount: b.price || 0 }], total: b.price || 0, note: b.teacher ? `ครูผู้สอน: ${b.teacher}` : "" })} />
+          onReceipt={(b) => setReceipt({ kind: "in", no: `RC-${(b.date || toInput(today)).replace(/-/g, "")}-${student.id}`, date: b.date || toInput(today), party: `${student.nick} ${student.first || ""} ${student.last || ""}`.trim(), items: [{ label: `${b.course} (${b.total} คาบ)${b.discount ? ` · ลด ${b.discount}%` : ""}`, amount: b.price || 0 }], total: b.price || 0, note: b.teacher ? `ครูผู้สอน: ${b.teacher}` : "" })}
+          biz={biz} onPayQR={(amount) => setPayQR({ student, amount })} />
       )}
 
       {receipt && <Receipt data={receipt} biz={biz} onClose={() => setReceipt(null)} />}
+      {payQR && <PayQR biz={biz} student={payQR.student} defaultAmount={payQR.amount} onClose={() => setPayQR(null)} />}
       {conflict && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4" onClick={() => setConflict(null)}>
           <div className="w-full max-w-xs rounded-2xl bg-white p-4" style={{ color: INK }} onClick={(e) => e.stopPropagation()}>
@@ -801,7 +822,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
 }
 
 // ─── โปรไฟล์นักเรียน ────────────────────────────────────────────
-function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew, onNote, onScore, onReschedule, onReceipt, layout, onSetRoom, roomLabelOf }) {
+function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew, onNote, onScore, onReschedule, onReceipt, layout, onSetRoom, roomLabelOf, biz, onPayQR }) {
   const [renewOpen, setRenewOpen] = useState(false);
   const [disc, setDisc] = useState(0);
   const [pickDate, setPickDate] = useState(null);
@@ -1025,7 +1046,8 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
                   <div key={i} className="flex items-center px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
                     <div className="flex-1"><span className="font-medium">{b.course}</span><span className="text-slate-500"> · {b.date} · {b.teacher} · {b.total} คาบ{b.time ? ` · ${b.time}` : ""}{b.discount ? ` · ลด ${b.discount}%` : ""}</span></div>
                     <div className="font-semibold">{b.price ? baht(b.price) : "-"}</div>
-                    <button onClick={() => onReceipt(b)} className="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: BLUE_SOFT, color: BLUE }} title="ออกใบเสร็จรับเงิน">ใบเสร็จ</button>
+                    <button onClick={() => onPayQR(b.price)} className="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: "#E9F9F0", color: "#1E8E5A" }} title="สร้าง QR รับเงิน">QR</button>
+                    <button onClick={() => onReceipt(b)} className="ml-1 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: BLUE_SOFT, color: BLUE }} title="ออกใบเสร็จรับเงิน">ใบเสร็จ</button>
                     <button onClick={() => onDeletePurchase(i)} className="ml-1 text-slate-300 hover:text-red-600" title="ลบรายการซื้อนี้"><X size={14} /></button>
                   </div>
                 ))}
@@ -1152,7 +1174,7 @@ function SchedulePanel({ student, sessions, courses, teachers, onSubmit, onClose
 }
 
 // ─── หลังบ้าน ────────────────────────────────────────────────────
-function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, periodLabelStr }) {
+function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, onPayQR, periodLabelStr }) {
   const rateOf = (course) => courses.find((c) => c.id === course)?.rate ?? 400;
   const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
   // รอบบิลปิดวันที่ 25 ของทุกเดือน: งวดถูกตั้งชื่อตามเดือนที่ปิดบิล
@@ -1285,6 +1307,8 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
       </section>
 
       <GroupClasses groups={groups} students={students} teachers={teachers.filter((t) => t.status === "Active")} courses={courses} onCreate={onCreateGroup} onAddMember={onAddMember} onRemoveMember={onRemoveMember} onDelete={onDeleteGroup} onPick={onPick} />
+
+      <PaymentsPanel biz={biz} students={students} say={say} onPayQR={onPayQR} />
 
       <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} onUpdate={onUpdateTeacher} />
 
@@ -2078,5 +2102,164 @@ function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSe
         </div>
       ); })()}
     </div>
+  );
+}
+
+// ─── โมดัล QR รับเงิน (พร้อมเพย์) ────────────────────────────────
+function PayQR({ biz, student, defaultAmount, onClose }) {
+  const [amount, setAmount] = useState(defaultAmount || "");
+  const pp = (biz?.promptpay || "").trim();
+  const payload = pp ? promptpayPayload(pp, Number(amount) || 0) : "";
+  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?name=${encodeURIComponent(student?.nick || "")}&id=${student?.id || ""}&amt=${Number(amount) || ""}&pp=${encodeURIComponent(pp)}` : "";
+  const copy = (t) => { try { navigator.clipboard.writeText(t); } catch (e) {} };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={onClose}>
+      <div className="w-full max-w-xs rounded-2xl bg-white p-4 text-center" style={{ ...font, color: INK }} onClick={(e) => e.stopPropagation()}>
+        <div className="text-base font-bold" style={{ color: BLUE }}>QR รับเงิน (พร้อมเพย์)</div>
+        {student && <div className="text-sm text-slate-500">{student.nick} {student.first || ""} #{student.id}</div>}
+        {!pp ? (
+          <div className="my-4 rounded-lg p-3 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ยังไม่ได้ตั้งเลขพร้อมเพย์ — ไปใส่ที่ "ข้อมูลธุรกิจ" ในหลังบ้านก่อนครับ</div>
+        ) : (
+          <>
+            <div className="my-3 flex justify-center">
+              <div className="rounded-xl bg-white p-3" style={{ border: "1px solid #D7E0F3" }}><QRCodeSVG value={payload} size={190} level="M" /></div>
+            </div>
+            <div className="mb-2 flex items-center justify-center gap-2 text-sm">
+              <span className="text-slate-500">ยอด</span>
+              <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="ระบุจำนวน" className="w-28 rounded-lg px-2 py-1 text-center" style={{ ...font, border: "1px solid #D7E0F3" }} />
+              <span className="text-slate-500">บาท</span>
+            </div>
+            <div className="text-xs text-slate-500">พร้อมเพย์: {pp}</div>
+            <div className="mt-3 flex flex-col gap-2">
+              <button onClick={() => copy(payLink)} className="rounded-lg py-2 text-sm font-semibold text-white" style={{ background: BLUE }}>คัดลอกลิงก์จ่ายเงิน (เด็กเปิดแล้วเห็น QR + อัปสลิปได้)</button>
+              <div className="text-xs text-slate-400">แคปหน้าจอ QR ส่งให้เด็ก หรือส่งลิงก์ด้านบนก็ได้</div>
+            </div>
+          </>
+        )}
+        <button onClick={onClose} className="mt-3 w-full rounded-lg py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid #D7E0F3" }}>ปิด</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── หน้าเด็กอัปสลิปเอง (public /pay) ───────────────────────────
+function PaySlipPage() {
+  const q = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const pp = q.get("pp") || "";
+  const [name, setName] = useState(q.get("name") || "");
+  const [sid, setSid] = useState(q.get("id") || "");
+  const [amount, setAmount] = useState(q.get("amt") || "");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+  const payload = pp ? promptpayPayload(pp, Number(amount) || 0) : "";
+  const submit = async () => {
+    setErr("");
+    if (!name.trim()) { setErr("กรอกชื่อ/ชื่อเล่นก่อน"); return; }
+    if (!file) { setErr("แนบรูปสลิปโอนเงินก่อน"); return; }
+    setBusy(true);
+    try {
+      const up = await uploadSlip(file);
+      await submitPayment({ studentName: name, studentId: sid, amount, month: new Date().toISOString().slice(0, 7), slipUrl: up.url, slipPath: up.path });
+      setDone(true);
+    } catch (e) { setErr("ส่งไม่สำเร็จ: " + (e.message || e)); }
+    setBusy(false);
+  };
+  const inp = { ...font, border: "1px solid #D7E0F3" };
+  if (done) return (
+    <div className="flex min-h-screen items-center justify-center p-6" style={{ ...font, background: "#F4F7FD", color: INK }}>
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center" style={{ border: "1px solid #D7E0F3" }}>
+        <div className="text-lg font-bold" style={{ color: BLUE }}>ส่งสลิปแล้ว ✓</div>
+        <div className="mt-1 text-sm text-slate-500">ขอบคุณครับ ทางโรงเรียนจะตรวจสอบยอดให้</div>
+      </div>
+    </div>
+  );
+  return (
+    <div className="min-h-screen p-5" style={{ ...font, background: "#F4F7FD", color: INK }}>
+      <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;800&display=swap" rel="stylesheet" />
+      <div className="mx-auto max-w-sm">
+        <div className="mb-3 text-center">
+          <div className="text-xl font-extrabold" style={{ color: BLUE }}>ชำระเงิน · ส่งสลิป</div>
+          <div className="text-sm text-slate-500">Today What Todo</div>
+        </div>
+        {pp && (
+          <div className="mb-3 rounded-2xl bg-white p-4 text-center" style={{ border: "1px solid #D7E0F3" }}>
+            <div className="mb-2 text-sm font-semibold">สแกนจ่ายพร้อมเพย์</div>
+            <div className="flex justify-center"><div className="rounded-xl p-2" style={{ border: "1px solid #D7E0F3" }}><QRCodeSVG value={payload} size={180} level="M" /></div></div>
+            {amount ? <div className="mt-2 text-sm">ยอด {Number(amount).toLocaleString()} บาท</div> : null}
+          </div>
+        )}
+        <div className="space-y-2 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+          <label className="block text-xs text-slate-500">ชื่อ/ชื่อเล่น *<input value={name} onChange={(e) => setName(e.target.value)} className="mt-0.5 w-full rounded-lg px-2 py-2 text-sm" style={inp} /></label>
+          <div className="flex gap-2">
+            <label className="block flex-1 text-xs text-slate-500">รหัสนักเรียน (ถ้ามี)<input value={sid} onChange={(e) => setSid(e.target.value)} className="mt-0.5 w-full rounded-lg px-2 py-2 text-sm" style={inp} /></label>
+            <label className="block flex-1 text-xs text-slate-500">ยอดโอน (บาท)<input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="mt-0.5 w-full rounded-lg px-2 py-2 text-sm" style={inp} /></label>
+          </div>
+          <label className="block text-xs text-slate-500">รูปสลิปโอนเงิน *
+            <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} className="mt-1 w-full text-sm" />
+          </label>
+          {file && <div className="text-xs text-slate-400">เลือกแล้ว: {file.name}</div>}
+          {err && <div className="text-xs" style={{ color: "#B42318" }}>{err}</div>}
+          <button onClick={submit} disabled={busy} className="mt-1 w-full rounded-xl py-2.5 font-semibold text-white disabled:opacity-50" style={{ background: BLUE }}>{busy ? "กำลังส่ง…" : "ส่งสลิป"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── หลังบ้าน: การเงิน / สลิป (แยกเดือน) ─────────────────────────
+function PaymentsPanel({ biz, students, say, onPayQR }) {
+  const [rows, setRows] = useState(null);
+  const [zoom, setZoom] = useState(null);
+  const reload = () => loadPayments().then(setRows).catch(() => setRows([]));
+  useEffect(() => { reload(); }, []);
+  const payLink = typeof window !== "undefined" ? `${window.location.origin}/pay?pp=${encodeURIComponent((biz?.promptpay || "").trim())}` : "";
+  const confirm = async (r) => { await updatePayment(r.id, { status: r.status === "confirmed" ? "pending" : "confirmed" }); reload(); };
+  const del = async (r) => { if (!window.confirm("ลบรายการนี้?")) return; await removePayment(r.id); reload(); };
+  const byMonth = {};
+  (rows || []).forEach((r) => { const m = r.month || (r.created_at || "").slice(0, 7); (byMonth[m] = byMonth[m] || []).push(r); });
+  const months = Object.keys(byMonth).sort().reverse();
+  const thMonth = (m) => { const [y, mo] = m.split("-"); return `${["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."][+mo] || mo} ${(+y) + 543}`; };
+  return (
+    <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold" style={{ color: BLUE }}>การเงิน / สลิป (แยกเดือน)</h2>
+        <div className="flex gap-1.5">
+          <button onClick={() => onPayQR(null, "")} className="rounded-full px-3 py-1 text-xs font-semibold text-white" style={{ background: "#1E8E5A" }}>สร้าง QR</button>
+          <button onClick={() => { try { navigator.clipboard.writeText(payLink); say("คัดลอกลิงก์ส่งสลิปแล้ว"); } catch (e) {} }} className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: BLUE_SOFT, color: BLUE }}>คัดลอกลิงก์ส่งสลิป</button>
+        </div>
+      </div>
+      <p className="mb-2 text-xs text-slate-500">ลิงก์ให้เด็กอัปสลิปเอง: <span className="break-all" style={{ color: BLUE }}>{payLink}</span></p>
+      {rows === null ? <div className="py-3 text-sm text-slate-400">กำลังโหลด…</div> :
+        months.length === 0 ? <div className="py-3 text-sm text-slate-400">ยังไม่มีสลิปเข้ามา</div> :
+        months.map((m) => {
+          const list = byMonth[m].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+          const total = list.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+          const conf = list.filter((r) => r.status === "confirmed").reduce((a, r) => a + (Number(r.amount) || 0), 0);
+          return (
+            <div key={m} className="mb-3">
+              <div className="mb-1 flex items-center justify-between">
+                <div className="text-sm font-bold">{thMonth(m)}</div>
+                <div className="text-xs text-slate-500">ยืนยันแล้ว {baht(conf)} / รวม {baht(total)} ({list.length} รายการ)</div>
+              </div>
+              <div className="overflow-hidden rounded-xl" style={{ border: "1px solid #EEF2FA" }}>
+                {list.map((r, i) => (
+                  <div key={r.id} className="flex items-center gap-2 px-2 py-2 text-sm" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
+                    {r.slip_url ? <img src={r.slip_url} onClick={() => setZoom(r.slip_url)} alt="slip" className="h-12 w-12 shrink-0 cursor-pointer rounded-md object-cover" style={{ border: "1px solid #D7E0F3" }} /> : <div className="h-12 w-12 shrink-0 rounded-md" style={{ background: "#EEF2FA" }} />}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium">{r.student_name} {r.student_id ? `#${r.student_id}` : ""}</div>
+                      <div className="text-xs text-slate-500">{baht(Number(r.amount) || 0)} · {(r.created_at || "").slice(0, 10)}</div>
+                    </div>
+                    <button onClick={() => confirm(r)} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold" style={r.status === "confirmed" ? { background: "#E9F9F0", color: "#1E8E5A" } : { background: "#FFF3D6", color: "#7A4B00" }}>{r.status === "confirmed" ? "✓ ยืนยันแล้ว" : "รอตรวจ"}</button>
+                    <button onClick={() => del(r)} className="shrink-0 rounded-md px-2 py-1 text-xs" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบ</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      {zoom && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setZoom(null)}><img src={zoom} alt="slip" className="max-h-[88vh] max-w-full rounded-lg" /></div>}
+    </section>
   );
 }

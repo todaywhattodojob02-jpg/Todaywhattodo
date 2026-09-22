@@ -90,3 +90,37 @@ export async function removeTeacherReg(id) {
   const { error } = await supabase.from("teacher_registrations").delete().eq("id", id);
   if (error) throw error;
 }
+
+// ─── ระบบจ่ายเงิน: อัปสลิป (Supabase Storage) + บันทึกการจ่าย ─────
+const LS_PAY = "twt-payments";
+export async function uploadSlip(file) {
+  if (!supabase) { return await new Promise((res) => { const r = new FileReader(); r.onload = () => res({ url: r.result, path: "local" }); r.readAsDataURL(file); }); }
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const path = `${new Date().toISOString().slice(0, 7)}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage.from("slips").upload(path, file, { upsert: false, contentType: file.type || "image/jpeg" });
+  if (error) throw error;
+  const { data } = supabase.storage.from("slips").getPublicUrl(path);
+  return { url: data.publicUrl, path };
+}
+export async function submitPayment(rec) {
+  const row = { student_name: rec.studentName || "", student_id: rec.studentId || "", amount: Number(rec.amount) || 0, month: rec.month || new Date().toISOString().slice(0, 7), slip_url: rec.slipUrl || "", slip_path: rec.slipPath || "", note: rec.note || "", status: "pending" };
+  if (!supabase) { const list = JSON.parse(localStorage.getItem(LS_PAY) || "[]"); list.push({ ...row, id: Date.now(), created_at: new Date().toISOString() }); localStorage.setItem(LS_PAY, JSON.stringify(list)); return; }
+  const { error } = await supabase.from("payments").insert(row);
+  if (error) throw error;
+}
+export async function loadPayments() {
+  if (!supabase) return JSON.parse(localStorage.getItem(LS_PAY) || "[]");
+  const { data, error } = await supabase.from("payments").select("*").order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+export async function updatePayment(id, patch) {
+  if (!supabase) { const list = JSON.parse(localStorage.getItem(LS_PAY) || "[]").map((p) => (p.id === id ? { ...p, ...patch } : p)); localStorage.setItem(LS_PAY, JSON.stringify(list)); return; }
+  const { error } = await supabase.from("payments").update(patch).eq("id", id);
+  if (error) throw error;
+}
+export async function removePayment(id) {
+  if (!supabase) { const list = JSON.parse(localStorage.getItem(LS_PAY) || "[]").filter((p) => p.id !== id); localStorage.setItem(LS_PAY, JSON.stringify(list)); return; }
+  const { error } = await supabase.from("payments").delete().eq("id", id);
+  if (error) throw error;
+}
