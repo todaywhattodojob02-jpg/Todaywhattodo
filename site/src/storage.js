@@ -21,6 +21,17 @@ const serSession = (x) => ({ ...x, at: x.at instanceof Date ? x.at.toISOString()
 const revSession = (x) => ({ ...x, at: new Date(x.at) });
 const _cache = { students: new Map(), sessions: new Map() }; // id -> JSON string (รูปแบบที่เก็บ) ไว้ diff
 const _chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+async function _fetchAll(table) {
+  const size = 1000; let from = 0; let out = [];
+  for (;;) {
+    const { data, error } = await supabase.from(table).select("id,data").range(from, from + size - 1);
+    if (error) throw error;
+    out = out.concat(data || []);
+    if (!data || data.length < size) break;
+    from += size;
+  }
+  return out;
+}
 
 async function seedRows(students, sessions) {
   for (const c of _chunk(students.map((x) => ({ id: x.id, data: x })), 300)) { const { error } = await supabase.from("students").upsert(c); if (error) throw error; }
@@ -37,10 +48,8 @@ export async function loadState() {
   const { data: cfgRow, error: e1 } = await supabase.from("app_state").select("data").eq("id", "main").maybeSingle();
   if (e1) throw e1;
   const cfg = cfgRow?.data || null;
-  const { data: stuRows, error: e2 } = await supabase.from("students").select("id,data");
-  if (e2) throw e2;
-  const { data: sesRows, error: e3 } = await supabase.from("sessions").select("id,data");
-  if (e3) throw e3;
+  const stuRows = await _fetchAll("students");   // ดึงครบทุกแถว (>1000 ก็ได้)
+  const sesRows = await _fetchAll("sessions");
 
   const rowsEmpty = (!stuRows || stuRows.length === 0) && (!sesRows || sesRows.length === 0);
   let students, sessions;
@@ -86,6 +95,10 @@ export async function saveState(state) {
   const curSes = new Map(state.sessions.map((x) => { const ss = serSession(x); return [x.id, JSON.stringify(ss)]; }));
   const sesUp = []; for (const [id, js] of curSes) if (_cache.sessions.get(id) !== js) sesUp.push({ id, data: JSON.parse(js) });
   const sesDel = []; for (const id of _cache.sessions.keys()) if (!curSes.has(id)) sesDel.push(id);
+
+  // 🛡️ กันชน: ห้ามลบทีละมากผิดปกติ (กันข้อมูลหายยกชุดจากแคชไม่ครบ/บั๊ก)
+  if (sesDel.length > 25) { console.warn("[safety] ยกเลิกการลบคาบจำนวนมากผิดปกติ:", sesDel.length); for (const id of sesDel) curSes.set(id, _cache.sessions.get(id)); sesDel.length = 0; }
+  if (stuDel.length > 15) { console.warn("[safety] ยกเลิกการลบนักเรียนจำนวนมากผิดปกติ:", stuDel.length); for (const id of stuDel) curStu.set(id, _cache.students.get(id)); stuDel.length = 0; }
 
   for (const c of _chunk(stuUp, 300)) { const { error } = await supabase.from("students").upsert(c); if (error) throw error; }
   for (const c of _chunk(sesUp, 300)) { const { error } = await supabase.from("sessions").upsert(c); if (error) throw error; }
