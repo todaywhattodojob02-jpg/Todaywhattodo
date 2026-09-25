@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive, submitTeacherReg, loadTeacherRegs, removeTeacherReg, uploadSlip, submitPayment, loadPayments, updatePayment, removePayment } from "./storage.js";
+import { loadState, saveState, mode, submitRegistration, loadRegistrations, removeRegistration, serialize, revive, submitTeacherReg, loadTeacherRegs, removeTeacherReg, uploadSlip, submitPayment, loadPayments, updatePayment, removePayment, savePayConfig, loadPayConfig, subscribeRealtime, pushSnapshot, listSnapshots, loadSnapshot } from "./storage.js";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Volume2, SlidersVertical, Phone, MessageCircle, Facebook, Instagram,
@@ -360,6 +360,49 @@ function Dashboard({ initial, loadErr }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // นำสถานะที่โหลดมา (จากไฟล์/สแนปช็อต) มาใส่ทั้งชุด
+  const applyLoadedState = (parsed) => {
+    if (!parsed || !Array.isArray(parsed.students) || !Array.isArray(parsed.sessions)) { say("ข้อมูลกู้คืนไม่ถูกต้อง"); return; }
+    setStudents(parsed.students); setSessions(parsed.sessions);
+    if (parsed.courses) setCourses(parsed.courses);
+    if (parsed.teachers) setTeachers(parsed.teachers);
+    if (parsed.rule) setRule(parsed.rule);
+    if (parsed.biz) setBiz(parsed.biz);
+    if (parsed.groups) setGroups(parsed.groups);
+    if (parsed.layout) setLayout(parsed.layout);
+    if (parsed.usage) setUsage(parsed.usage);
+  };
+
+  // Realtime: เครื่องอื่นแก้แล้วเห็นทันที (กันข้อมูลชนกัน)
+  useEffect(() => {
+    const unsub = subscribeRealtime(
+      (e) => { if (e.type === "delete") setStudents((a) => a.filter((s) => s.id !== e.id)); else setStudents((a) => { const i = a.findIndex((s) => s.id === e.student.id); if (i < 0) return [e.student, ...a]; const n = [...a]; n[i] = e.student; return n; }); },
+      (e) => { if (e.type === "delete") setSessions((a) => a.filter((s) => s.id !== e.id)); else setSessions((a) => { const i = a.findIndex((s) => s.id === e.session.id); if (i < 0) return [...a, e.session]; const n = [...a]; n[i] = e.session; return n; }); }
+    );
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // สำรองบนคลาวด์วันละ 1 ครั้ง (กู้ย้อนหลังได้ในแอป)
+  useEffect(() => {
+    try {
+      const k = "twt-last-snapshot";
+      const t = toInput(new Date());
+      if (localStorage.getItem(k) !== t && (rawStudents.length || sessions.length)) {
+        pushSnapshot({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage })
+          .then(() => localStorage.setItem(k, t)).catch(() => {});
+      }
+    } catch (e) { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawStudents.length]);
+
+  // เตือนก่อนปิดถ้ายังบันทึกไม่เสร็จ
+  useEffect(() => {
+    const h = (e) => { if (saveStatus === "saving" || saveStatus === "error") { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [saveStatus]);
+
   // บันทึกอัตโนมัติทุกครั้งที่ข้อมูลเปลี่ยน (หน่วง 0.8 วิ)
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
@@ -368,6 +411,7 @@ function Dashboard({ initial, loadErr }) {
       saveState({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage })
         .then(() => setSaveStatus("saved"))
         .catch((e) => { console.error(e); setSaveStatus("error"); });
+      savePayConfig({ qrUrl: biz.qrImgUrl || "", promptpay: biz.promptpay || "", bankInfo: biz.bankInfo || "" }).catch(() => {});
     }, 800);
     return () => clearTimeout(t);
   }, [rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage]);
@@ -463,9 +507,13 @@ function Dashboard({ initial, loadErr }) {
     run();
   };
   const deleteUnusedPast = () => {
-    const stale = sessions.filter((x) => !x.done && !x.absent && x.at < today);
-    if (!stale.length) { say("ไม่มีคาบเก่าที่เลยมาแล้วแต่ยังไม่ได้เช็ค"); return; }
-    if (!window.confirm(`ลบคาบที่เลยกำหนดมาแล้วแต่ยังไม่ได้ติ๊กว่าเรียน/ขาด ${stale.length} คาบ? (คาบในอนาคตและคาบที่เรียนแล้วจะไม่ถูกลบ)`)) return;
+    const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() - 30);
+    const stale = sessions.filter((x) => !x.done && !x.absent && x.at < cutoff);
+    if (!stale.length) { say("ไม่มีคาบค้างที่เก่าเกิน 30 วัน"); return; }
+    const names = [...new Set(stale.map((x) => { const st = rawStudents.find((s) => s.id === x.studentId); return st ? `${st.nick}` : "#" + x.studentId; }))];
+    const preview = names.slice(0, 15).join(", ") + (names.length > 15 ? ` …และอีก ${names.length - 15} คน` : "");
+    if (!window.confirm(`จะลบคาบที่เลยกำหนดเกิน 30 วัน และยังไม่ได้ติ๊กว่าเรียน/ขาด รวม ${stale.length} คาบ ของ ${names.length} คน:\n\n${preview}\n\n⚠️ ถ้าเด็กเรียนจบแล้วแต่ไม่ได้ติ๊กว่าเรียน คาบจะถูกลบด้วย — แนะนำติ๊ก "เรียนแล้ว" ให้เรียบร้อยก่อน\n\nยืนยันลบไหม?`)) return;
+    if (!window.confirm(`ยืนยันอีกครั้ง — ลบ ${stale.length} คาบถาวร? (กู้คืนได้จากไฟล์สำรองเท่านั้น)`)) return;
     const ids = new Set(stale.map((x) => x.id));
     setSessions((all) => all.filter((x) => !ids.has(x.id)));
     say(`ลบคาบค้างเก่า ${stale.length} คาบแล้ว`);
@@ -586,7 +634,7 @@ function Dashboard({ initial, loadErr }) {
           <StudentsTab students={students} sessions={sessions} pool={pool} onPick={setOpen} onAdd={(f, open) => addStudent(f, open)} />
         )}
 
-        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} onPayQR={(student, amount) => setPayQR({ student, amount })} />}
+        {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} onPayQR={(student, amount) => setPayQR({ student, amount })} onApplyState={applyLoadedState} />}
         {tab === "rooms" && <RoomsTab layout={layout} setLayout={setLayout} usage={usage} setUsage={setUsage} sessions={sessions} students={students} onSetRoom={setSessionRoom} onPick={setOpen} say={say} />}
         {tab === "form" && <FormPreview say={say} courses={courses} teachers={teachers.filter((t) => t.status === "Active")} onAccept={acceptRegistration} />}
       </main>
@@ -1174,7 +1222,7 @@ function SchedulePanel({ student, sessions, courses, teachers, onSubmit, onClose
 }
 
 // ─── หลังบ้าน ────────────────────────────────────────────────────
-function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, onPayQR, periodLabelStr }) {
+function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, onPayQR, onApplyState, periodLabelStr }) {
   const rateOf = (course) => courses.find((c) => c.id === course)?.rate ?? 400;
   const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
   // รอบบิลปิดวันที่ 25 ของทุกเดือน: งวดถูกตั้งชื่อตามเดือนที่ปิดบิล
@@ -1310,6 +1358,8 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
 
       <PaymentsPanel biz={biz} students={students} say={say} onPayQR={onPayQR} />
 
+      <SnapshotRestore onApplyState={onApplyState} say={say} />
+
       <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} onUpdate={onUpdateTeacher} />
 
       <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
@@ -1321,6 +1371,9 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
             </label>
           ))}
         </div>
+        <label className="mt-2 block text-xs text-slate-500">บัญชีธนาคาร (จะโชว์ในหน้าจ่ายเงิน /pay ให้เด็กโอน) — พิมพ์หลายบรรทัดได้
+          <textarea value={biz.bankInfo || ""} onChange={(e) => setBiz({ ...biz, bankInfo: e.target.value })} rows={2} placeholder="เช่น กรุงไทย 123-4-56789-0 ชื่อบัญชี ชาวด์ วิธ ทูเดย์" className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid #D7E0F3" }} />
+        </label>
         <p className="mt-1.5 text-xs text-slate-500">ข้อมูลนี้จะขึ้นหัวใบเสร็จรับเงิน/ใบจ่ายเงิน</p>
         <div className="mt-3">
           <div className="text-xs text-slate-500">QR รับเงิน — อัปโหลดรูป QR พร้อมเพย์/ธนาคารของร้าน (ถ้าอัป จะใช้รูปนี้แทนการสร้าง QR อัตโนมัติ)</div>
@@ -2160,8 +2213,12 @@ function PayQR({ biz, student, defaultAmount, onClose }) {
 // ─── หน้าเด็กอัปสลิปเอง (public /pay) ───────────────────────────
 function PaySlipPage() {
   const q = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
-  const pp = q.get("pp") || "";
-  const qrImg = q.get("qr") || "";
+  const [cfg, setCfg] = useState(null);
+  useEffect(() => { loadPayConfig().then(setCfg).catch(() => setCfg(null)); }, []);
+  // ดึงจากคลาวด์ก่อน (เสถียร) ถ้าไม่มีค่อย fallback ไปที่ลิงก์
+  const qrImg = (cfg?.qr_url || q.get("qr") || "").trim();
+  const pp = (cfg?.promptpay || q.get("pp") || "").trim();
+  const bankInfo = (cfg?.bank_info || "").trim();
   const [name, setName] = useState(q.get("name") || "");
   const [sid, setSid] = useState(q.get("id") || "");
   const [amount, setAmount] = useState(q.get("amt") || "");
@@ -2199,11 +2256,14 @@ function PaySlipPage() {
           <div className="text-xl font-extrabold" style={{ color: BLUE }}>ชำระเงิน · ส่งสลิป</div>
           <div className="text-sm text-slate-500">Today What Todo</div>
         </div>
-        {(qrImg || pp) && (
+        {(qrImg || pp || bankInfo) && (
           <div className="mb-3 rounded-2xl bg-white p-4 text-center" style={{ border: "1px solid #D7E0F3" }}>
-            <div className="mb-2 text-sm font-semibold">สแกนจ่ายเงิน</div>
-            <div className="flex justify-center"><div className="rounded-xl p-2" style={{ border: "1px solid #D7E0F3" }}>{qrImg ? <img src={qrImg} alt="QR" style={{ width: 180, height: 180, objectFit: "contain" }} /> : <QRCodeSVG value={payload} size={180} level="M" />}</div></div>
-            {amount ? <div className="mt-2 text-sm">ยอด {Number(amount).toLocaleString()} บาท</div> : (qrImg ? <div className="mt-2 text-xs text-slate-400">สแกนแล้วพิมพ์ยอดในแอปธนาคาร</div> : null)}
+            {(qrImg || pp) && <>
+              <div className="mb-2 text-sm font-semibold">สแกนจ่ายเงิน</div>
+              <div className="flex justify-center"><div className="rounded-xl p-2" style={{ border: "1px solid #D7E0F3" }}>{qrImg ? <img src={qrImg} alt="QR" style={{ width: 180, height: 180, objectFit: "contain" }} onError={(e) => { e.target.style.display = "none"; }} /> : <QRCodeSVG value={payload} size={180} level="M" />}</div></div>
+              {amount ? <div className="mt-2 text-sm">ยอด {Number(amount).toLocaleString()} บาท</div> : (qrImg ? <div className="mt-2 text-xs text-slate-400">สแกนแล้วพิมพ์ยอดในแอปธนาคาร</div> : null)}
+            </>}
+            {bankInfo && <div className="mt-2 whitespace-pre-line rounded-lg px-3 py-2 text-sm" style={{ background: BLUE_SOFT, color: INK }}>{bankInfo}</div>}
           </div>
         )}
         <div className="space-y-2 rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
@@ -2276,6 +2336,37 @@ function PaymentsPanel({ biz, students, say, onPayQR }) {
           );
         })}
       {zoom && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setZoom(null)}><img src={zoom} alt="slip" className="max-h-[88vh] max-w-full rounded-lg" /></div>}
+    </section>
+  );
+}
+
+// ─── หลังบ้าน: กู้คืนจากสำรองบนคลาวด์ (ย้อนวัน) ────────────────────
+function SnapshotRestore({ onApplyState, say }) {
+  const [snaps, setSnaps] = useState(null);
+  const [open, setOpen] = useState(false);
+  const load = () => { setOpen(true); listSnapshots().then(setSnaps).catch(() => setSnaps([])); };
+  const restore = async (id) => {
+    if (!window.confirm(`กู้คืนข้อมูลของวันที่ ${id}?\nจะทับข้อมูลปัจจุบันทั้งหมด`)) return;
+    try { const st = await loadSnapshot(id); if (st) { onApplyState(st); say(`กู้คืนข้อมูลวันที่ ${id} แล้ว`); } else say("ไม่พบสแนปช็อตของวันนั้น"); }
+    catch (e) { say("กู้คืนไม่สำเร็จ: " + (e.message || e)); }
+  };
+  return (
+    <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid #D7E0F3" }}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold" style={{ color: BLUE }}>สำรองบนคลาวด์ (กู้ย้อนหลัง)</h2>
+        <button onClick={load} className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: BLUE_SOFT, color: BLUE }}>ดูรายการสำรอง</button>
+      </div>
+      <p className="text-xs text-slate-500">ระบบเก็บสแนปช็อตอัตโนมัติวันละ 1 ครั้งบนคลาวด์ ถ้าข้อมูลผิดพลาดกดกู้คืนย้อนวันได้ (ไม่ต้องพึ่งไฟล์ที่โหลดเก็บเอง)</p>
+      {open && (snaps === null ? <div className="py-2 text-sm text-slate-400">กำลังโหลด…</div> :
+        snaps.length === 0 ? <div className="py-2 text-sm text-slate-400">ยังไม่มีสำรอง (ระบบจะเริ่มเก็บวันนี้)</div> :
+        <div className="mt-2">
+          {snaps.map((s, i) => (
+            <div key={s.id} className="flex items-center gap-2 py-1.5 text-sm" style={i ? { borderTop: "1px solid #EEF2FA" } : {}}>
+              <span className="flex-1">📅 {s.id}</span>
+              <button onClick={() => restore(s.id)} className="rounded-md px-3 py-1 text-xs font-semibold text-white" style={{ background: BLUE }}>กู้คืน</button>
+            </div>
+          ))}
+        </div>)}
     </section>
   );
 }

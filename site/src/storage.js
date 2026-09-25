@@ -16,21 +16,84 @@ export const revive = (state) => ({
   sessions: state.sessions.map((s) => ({ ...s, at: new Date(s.at) })),
 });
 
+// ─── เก็บแบบแยกรายการ: students/sessions เป็นแถวๆ, config อยู่ใน app_state ───
+const serSession = (x) => ({ ...x, at: x.at instanceof Date ? x.at.toISOString() : x.at });
+const revSession = (x) => ({ ...x, at: new Date(x.at) });
+const _cache = { students: new Map(), sessions: new Map() }; // id -> JSON string (รูปแบบที่เก็บ) ไว้ diff
+const _chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+async function seedRows(students, sessions) {
+  for (const c of _chunk(students.map((x) => ({ id: x.id, data: x })), 300)) { const { error } = await supabase.from("students").upsert(c); if (error) throw error; }
+  for (const c of _chunk(sessions.map((x) => ({ id: x.id, data: serSession(x) })), 300)) { const { error } = await supabase.from("sessions").upsert(c); if (error) throw error; }
+}
+
 export async function loadState() {
   if (!supabase) {
     const raw = localStorage.getItem(LS);
-    return raw ? revive(JSON.parse(raw)) : null;
+    const st = raw ? revive(JSON.parse(raw)) : null;
+    if (st) { _cache.students = new Map((st.students || []).map((x) => [x.id, JSON.stringify(x)])); _cache.sessions = new Map((st.sessions || []).map((x) => [x.id, JSON.stringify(serSession(x))])); }
+    return st;
   }
-  const { data, error } = await supabase.from("app_state").select("data").eq("id", "main").maybeSingle();
-  if (error) throw error;
-  return data?.data ? revive(data.data) : null;
+  const { data: cfgRow, error: e1 } = await supabase.from("app_state").select("data").eq("id", "main").maybeSingle();
+  if (e1) throw e1;
+  const cfg = cfgRow?.data || null;
+  const { data: stuRows, error: e2 } = await supabase.from("students").select("id,data");
+  if (e2) throw e2;
+  const { data: sesRows, error: e3 } = await supabase.from("sessions").select("id,data");
+  if (e3) throw e3;
+
+  const rowsEmpty = (!stuRows || stuRows.length === 0) && (!sesRows || sesRows.length === 0);
+  let students, sessions;
+  if (rowsEmpty && cfg && Array.isArray(cfg.students) && cfg.students.length) {
+    // ย้ายข้อมูลเดิม (ก้อนเดียว) เข้าตารางแยก ครั้งแรกครั้งเดียว
+    students = cfg.students;
+    sessions = cfg.sessions || [];
+    await seedRows(students, sessions);
+  } else {
+    students = (stuRows || []).map((r) => r.data);
+    sessions = (sesRows || []).map((r) => r.data);
+  }
+  _cache.students = new Map(students.map((x) => [x.id, JSON.stringify(x)]));
+  _cache.sessions = new Map(sessions.map((x) => [x.id, JSON.stringify(x)])); // เก็บในรูปแบบ serialized (at เป็น iso)
+
+  if (!cfg && rowsEmpty) return null; // ว่างจริง (เครื่องใหม่)
+
+  return {
+    students,
+    sessions: sessions.map(revSession),
+    courses: cfg?.courses, teachers: cfg?.teachers, rule: cfg?.rule,
+    biz: cfg?.biz, groups: cfg?.groups, layout: cfg?.layout, usage: cfg?.usage,
+  };
 }
 
 export async function saveState(state) {
-  const payload = serialize(state);
-  if (!supabase) { localStorage.setItem(LS, JSON.stringify(payload)); return; }
-  const { error } = await supabase.from("app_state").upsert({ id: "main", data: payload, updated_at: new Date().toISOString() });
-  if (error) throw error;
+  if (!supabase) {
+    localStorage.setItem(LS, JSON.stringify(serialize(state)));
+    _cache.students = new Map(state.students.map((x) => [x.id, JSON.stringify(x)]));
+    _cache.sessions = new Map(state.sessions.map((x) => [x.id, JSON.stringify(serSession(x))]));
+    return;
+  }
+  // config (เล็ก) เก็บก้อนเดียว — ไม่รวม students/sessions แล้ว
+  const cfg = { courses: state.courses, teachers: state.teachers, rule: state.rule, biz: state.biz, groups: state.groups, layout: state.layout, usage: state.usage };
+  const { error: ec } = await supabase.from("app_state").upsert({ id: "main", data: cfg, updated_at: new Date().toISOString() });
+  if (ec) throw ec;
+
+  // เซฟเฉพาะ "แถวที่เปลี่ยน" (คนอื่นแก้คนละแถวจะไม่ทับกัน)
+  const curStu = new Map(state.students.map((x) => [x.id, JSON.stringify(x)]));
+  const stuUp = []; for (const [id, js] of curStu) if (_cache.students.get(id) !== js) stuUp.push({ id, data: JSON.parse(js) });
+  const stuDel = []; for (const id of _cache.students.keys()) if (!curStu.has(id)) stuDel.push(id);
+
+  const curSes = new Map(state.sessions.map((x) => { const ss = serSession(x); return [x.id, JSON.stringify(ss)]; }));
+  const sesUp = []; for (const [id, js] of curSes) if (_cache.sessions.get(id) !== js) sesUp.push({ id, data: JSON.parse(js) });
+  const sesDel = []; for (const id of _cache.sessions.keys()) if (!curSes.has(id)) sesDel.push(id);
+
+  for (const c of _chunk(stuUp, 300)) { const { error } = await supabase.from("students").upsert(c); if (error) throw error; }
+  for (const c of _chunk(sesUp, 300)) { const { error } = await supabase.from("sessions").upsert(c); if (error) throw error; }
+  for (const c of _chunk(stuDel, 200)) { const { error } = await supabase.from("students").delete().in("id", c); if (error) throw error; }
+  for (const c of _chunk(sesDel, 200)) { const { error } = await supabase.from("sessions").delete().in("id", c); if (error) throw error; }
+
+  _cache.students = curStu;
+  _cache.sessions = curSes;
 }
 
 // ─── ฟอร์มสมัคร (เด็กกรอกเอง) ────────────────────────────────
@@ -123,4 +186,58 @@ export async function removePayment(id) {
   if (!supabase) { const list = JSON.parse(localStorage.getItem(LS_PAY) || "[]").filter((p) => p.id !== id); localStorage.setItem(LS_PAY, JSON.stringify(list)); return; }
   const { error } = await supabase.from("payments").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ─── ตั้งค่าหน้าจ่ายเงิน (public /pay ดึงไปโชว์ QR + เลขบัญชี) ─────
+export async function savePayConfig(cfg) {
+  const row = { id: "main", qr_url: cfg.qrUrl || "", promptpay: cfg.promptpay || "", bank_info: cfg.bankInfo || "", updated_at: new Date().toISOString() };
+  if (!supabase) { localStorage.setItem("twt-payconfig", JSON.stringify(row)); return; }
+  const { error } = await supabase.from("pay_config").upsert(row);
+  if (error) throw error;
+}
+export async function loadPayConfig() {
+  if (!supabase) { try { return JSON.parse(localStorage.getItem("twt-payconfig") || "null"); } catch (e) { return null; } }
+  const { data, error } = await supabase.from("pay_config").select("*").eq("id", "main").maybeSingle();
+  if (error) return null;
+  return data;
+}
+
+// ─── Realtime: เครื่องอื่นแก้แล้วเห็นทันที (กันข้อมูลชนกัน) ──────────
+let _rtChannel = null;
+export function subscribeRealtime(onStudent, onSession) {
+  if (!supabase) return () => {};
+  try {
+    if (_rtChannel) { supabase.removeChannel(_rtChannel); _rtChannel = null; }
+    _rtChannel = supabase.channel("twt-rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "students" }, (p) => {
+        if (p.eventType === "DELETE") { const id = p.old?.id; if (id != null) { _cache.students.delete(id); onStudent({ type: "delete", id }); } }
+        else { const row = p.new; if (row?.data) { _cache.students.set(row.id, JSON.stringify(row.data)); onStudent({ type: "upsert", student: row.data }); } }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "sessions" }, (p) => {
+        if (p.eventType === "DELETE") { const id = p.old?.id; if (id != null) { _cache.sessions.delete(id); onSession({ type: "delete", id }); } }
+        else { const row = p.new; if (row?.data) { _cache.sessions.set(row.id, JSON.stringify(row.data)); onSession({ type: "upsert", session: revSession(row.data) }); } }
+      })
+      .subscribe();
+  } catch (e) { console.error("realtime error", e); return () => {}; }
+  return () => { try { if (_rtChannel) { supabase.removeChannel(_rtChannel); _rtChannel = null; } } catch (e) {} };
+}
+
+// ─── สำรองอัตโนมัติบนคลาวด์ (เก็บวันละ 1 สแนปช็อต กู้ย้อนหลังได้) ──────
+export async function pushSnapshot(state) {
+  if (!supabase) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const { error } = await supabase.from("backups").upsert({ id: day, data: serialize(state), created_at: new Date().toISOString() });
+  if (error) throw error;
+}
+export async function listSnapshots() {
+  if (!supabase) return [];
+  const { data, error } = await supabase.from("backups").select("id,created_at").order("id", { ascending: false }).limit(30);
+  if (error) return [];
+  return data || [];
+}
+export async function loadSnapshot(id) {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from("backups").select("data").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data?.data ? revive(data.data) : null;
 }
