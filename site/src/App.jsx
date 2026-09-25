@@ -26,7 +26,7 @@ const font = { fontFamily: "'Prompt', 'Kanit', 'Sarabun', system-ui, sans-serif"
 
 // ─── ธีม Light / Dark ───────────────────────────────────────────
 const THEME_CSS = `
-:root{--bg:var(--bg);--card:#ffffff;--ink:#10254F;--muted:#7A8296;--line:var(--line);--line-soft:var(--line-soft);--blue:#1656D6;--blue-dark:#0F44B0;--blue-soft:#E9F0FE;}
+:root{--bg:#F4F7FD;--card:#ffffff;--ink:#10254F;--muted:#7A8296;--line:#D7E0F3;--line-soft:#EEF2FA;--blue:#1656D6;--blue-dark:#0F44B0;--blue-soft:#E9F0FE;}
 [data-theme="dark"]{--bg:#0F1420;--card:#182233;--ink:#E6ECF7;--muted:#94A2B8;--line:#2A3750;--line-soft:#222E44;--blue:#4F8BFF;--blue-dark:#3B6FD6;--blue-soft:#1E2A44;}
 body{background:var(--bg);}
 [data-theme="dark"] .bg-white{background-color:var(--card)!important;}
@@ -1306,7 +1306,7 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
 
   const [view, setView] = useState("main");
   return (
-    <div className="space-y-5">
+    <div className="mx-auto max-w-3xl space-y-5">
       <div className="inline-flex overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
         <button onClick={() => setView("main")} className="px-3 py-1.5 text-sm font-semibold" style={view === "main" ? { background: BLUE, color: "#fff" } : { background: "var(--card)", color: INK }}>ภาพรวม / การเงิน</button>
         <button onClick={() => setView("settings")} className="flex items-center gap-1 px-3 py-1.5 text-sm font-semibold" style={view === "settings" ? { background: BLUE, color: "#fff" } : { background: "var(--card)", color: INK }}><Settings size={15} /> ตั้งค่า</button>
