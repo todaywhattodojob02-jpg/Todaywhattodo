@@ -38,9 +38,21 @@ body{background:var(--bg);}
 [data-theme="dark"] .text-slate-700{color:#C3CCDC!important;}
 [data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--card);color:var(--ink);}
 `;
+const ACCENTS = {
+  blue:   { name: "น้ำเงิน",     light: ["#1656D6", "#0F44B0", "#E9F0FE"], dark: ["#4F8BFF", "#3B6FD6", "#1E2A44"] },
+  teal:   { name: "เขียวมิ้นท์", light: ["#0E9F6E", "#0B7D57", "#E3F7EF"], dark: ["#34D399", "#10B981", "#0F2A20"] },
+  purple: { name: "ม่วง",        light: ["#6D28D9", "#5B21B6", "#EEE9FD"], dark: ["#A78BFA", "#8B5CF6", "#241B3A"] },
+  orange: { name: "ส้มพีช",      light: ["#EA580C", "#C2410C", "#FDEBDD"], dark: ["#FB923C", "#F97316", "#342014"] },
+  rose:   { name: "ชมพู",        light: ["#DB2777", "#BE185D", "#FCE7F1"], dark: ["#F472B6", "#EC4899", "#331728"] },
+};
+const applyAccent = (key, isDark) => {
+  const a = ACCENTS[key] || ACCENTS.blue; const v = isDark ? a.dark : a.light;
+  try { const r = document.documentElement.style; r.setProperty("--blue", v[0]); r.setProperty("--blue-dark", v[1]); r.setProperty("--blue-soft", v[2]); localStorage.setItem("twt-accent", key); } catch (e) {}
+};
 if (typeof document !== "undefined" && !document.getElementById("twt-theme")) {
   const st = document.createElement("style"); st.id = "twt-theme"; st.textContent = THEME_CSS; document.head.appendChild(st);
   try { const saved = localStorage.getItem("twt-theme"); if (saved) document.documentElement.setAttribute("data-theme", saved); } catch (e) {}
+  try { applyAccent(localStorage.getItem("twt-accent") || "blue", document.documentElement.getAttribute("data-theme") === "dark"); } catch (e) {}
 }
 const applyTheme = (t) => { try { document.documentElement.setAttribute("data-theme", t); localStorage.setItem("twt-theme", t); } catch (e) {} };
 
@@ -425,6 +437,9 @@ function Dashboard({ initial, loadErr }) {
     return () => window.removeEventListener("beforeunload", h);
   }, [saveStatus]);
 
+  // ใช้ธีมสีที่เลือก (จากคลาวด์/เครื่อง) + รีเฟรชตอนสลับสว่าง-มืด
+  useEffect(() => { applyAccent(biz.accent || (typeof localStorage !== "undefined" && localStorage.getItem("twt-accent")) || "blue", dark); }, [biz.accent, dark]);
+
   // บันทึกอัตโนมัติทุกครั้งที่ข้อมูลเปลี่ยน (หน่วง 0.8 วิ)
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
@@ -614,11 +629,11 @@ function Dashboard({ initial, loadErr }) {
       {/* Header */}
       <header className="px-4 pt-5 pb-4" style={{ background: BLUE }}>
         <div className="mx-auto flex max-w-6xl items-end justify-between">
-          <Logo />
+          {biz.logoUrl ? <img src={biz.logoUrl} alt="logo" style={{ height: 44, maxWidth: 180, objectFit: "contain" }} /> : <Logo />}
           <div className="text-right text-white/80 text-sm">
             <button onClick={toggleTheme} title="สลับธีม" className="mb-1 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium" style={{ background: "rgba(255,255,255,.18)", color: "#fff" }}>{dark ? <><Sun size={13} /> สว่าง</> : <><Moon size={13} /> มืด</>}</button>
-            <div className="font-semibold text-white">Sound With Today</div>
-            <div>สอนทำเพลง · นักเรียนทั้งหมด {students.length} คน</div>
+            <div className="font-semibold text-white">{biz.headerName || "Sound With Today"}</div>
+            <div>{biz.tagline || "สอนทำเพลง"} · นักเรียนทั้งหมด {students.length} คน</div>
             <div className="mt-0.5 flex items-center justify-end gap-1 text-xs">
               {saveStatus === "error" ? <><CloudOff size={12} /> บันทึกไม่สำเร็จ</> : saveStatus === "saving" ? <><Cloud size={12} /> กำลังบันทึก…</> : <><Cloud size={12} /> {mode === "supabase" ? "บันทึกบนคลาวด์แล้ว" : "บันทึกในเครื่องนี้"}</>}
             </div>
@@ -1390,6 +1405,40 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
       </>)}
 
       {view === "settings" && (<>
+      <section className="rounded-2xl bg-white p-4" style={{ border: "1px solid var(--line)" }}>
+        <div className="mb-2 text-sm font-semibold" style={{ color: BLUE }}>หน้าตาเว็บ (โลโก้ / ชื่อ / ธีมสี)</div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <label className="block text-xs text-slate-500">ชื่อที่แสดงบนหัวเว็บ
+            <input value={biz.headerName || ""} onChange={(e) => setBiz({ ...biz, headerName: e.target.value })} placeholder="Sound With Today" className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} />
+          </label>
+          <label className="block text-xs text-slate-500">คำโปรยใต้ชื่อ
+            <input value={biz.tagline || ""} onChange={(e) => setBiz({ ...biz, tagline: e.target.value })} placeholder="สอนทำเพลง" className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} />
+          </label>
+        </div>
+        <div className="mt-3 text-xs text-slate-500">โลโก้ (แสดงมุมซ้ายบน)</div>
+        <div className="mt-1 flex items-center gap-3">
+          {biz.logoUrl ? <img src={biz.logoUrl} alt="logo" className="rounded-lg" style={{ height: 52, maxWidth: 150, objectFit: "contain", background: "#0b2a6b", padding: 4 }} /> : <div className="flex h-13 w-24 items-center justify-center rounded-lg text-center text-xs text-slate-400" style={{ height: 52, border: "1px dashed var(--line)" }}>ยังไม่มีโลโก้</div>}
+          <label className="cursor-pointer rounded-lg px-3 py-1.5 text-sm font-semibold" style={{ background: BLUE_SOFT, color: BLUE }}>
+            {biz.logoUrl ? "เปลี่ยนโลโก้" : "อัปโหลดโลโก้"}
+            <input type="file" accept="image/*" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; try { const up = await uploadSlip(f); setBiz({ ...biz, logoUrl: up.url }); say("อัปโหลดโลโก้แล้ว"); } catch (err) { say("อัปโหลดไม่สำเร็จ: " + (err.message || err)); } e.target.value = ""; }} />
+          </label>
+          {biz.logoUrl && <button onClick={() => setBiz({ ...biz, logoUrl: "" })} className="rounded-lg px-3 py-1.5 text-sm" style={{ background: "#FDE8E8", color: "#B42318" }}>ลบโลโก้</button>}
+        </div>
+        <div className="mt-3 text-xs text-slate-500">ธีมสี (เลือกได้ 5 สี)</div>
+        <div className="mt-1 flex flex-wrap gap-2">
+          {Object.entries(ACCENTS).map(([key, a]) => {
+            const on = (biz.accent || "blue") === key;
+            return (
+              <button key={key} onClick={() => { setBiz({ ...biz, accent: key }); applyAccent(key, document.documentElement.getAttribute("data-theme") === "dark"); }}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold"
+                style={{ border: on ? `2px solid ${a.light[0]}` : "1px solid var(--line)", background: "var(--card)", color: "var(--ink)" }}>
+                <span style={{ width: 14, height: 14, borderRadius: "50%", background: a.light[0], display: "inline-block" }} />{a.name}{on ? " ✓" : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-xs text-slate-400">* สลับโหมด สว่าง/มืด ที่ปุ่มมุมขวาบนของหัวเว็บ</div>
+      </section>
       <SnapshotRestore onApplyState={onApplyState} say={say} />
 
       <TeacherEditor teachers={teachers} sessions={sessions} onAdd={onAddTeacher} onRemove={onRemoveTeacher} onUpdate={onUpdateTeacher} />
