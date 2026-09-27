@@ -290,6 +290,7 @@ function Dashboard({ initial, loadErr }) {
   const setSessionRoom = (sessionId, room) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, room: room || undefined } : x)));
   const roomNameById = useMemo(() => { const m = {}; (layout.floors || []).forEach((f) => f.rooms.forEach((r) => { m[r.id] = r.name; })); return m; }, [layout]);
   const roomLabelOf = (room) => room === "online" ? "ออนไลน์" : (room && roomNameById[room]) ? roomNameById[room] : "";
+  const courseName = (id) => courses.find((c) => c.id === id)?.name || id;
   const setSessionNote = (sessionId, note) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, note } : x)));
   const setSessionScore = (sessionId, score) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, score } : x)));
   const [conflict, setConflict] = useState(null); // { list, run }
@@ -665,7 +666,7 @@ function Dashboard({ initial, loadErr }) {
           <WeekGrid sessions={sessions} students={students} forfeitedIds={forfeitedIds}
             teacherFilter={teacherFilter} setTeacherFilter={setTeacherFilter}
             studentFilter={studentFilter} setStudentFilter={setStudentFilter}
-            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} roomLabelOf={roomLabelOf} />
+            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} roomLabelOf={roomLabelOf} courseName={courseName} />
         )}
 
         {tab === "students" && (
@@ -673,7 +674,7 @@ function Dashboard({ initial, loadErr }) {
         )}
 
         {tab === "admin" && <Admin students={students} sessions={sessions} courses={courses} setCourses={setCourses} teachers={teachers} onAddTeacher={addTeacher} onRemoveTeacher={removeTeacher} onUpdateTeacher={updateTeacher} pool={pool} rule={rule} setRule={setRule} onPick={setOpen} say={say} onCleanup={deleteUnusedPast} onBackup={exportBackup} onRestore={importBackup} biz={biz} setBiz={setBiz} groups={groups} onCreateGroup={createGroup} onAddMember={addGroupMember} onRemoveMember={removeGroupMember} onDeleteGroup={deleteGroup} onReceipt={setReceipt} onPayQR={(student, amount) => setPayQR({ student, amount })} onApplyState={applyLoadedState} />}
-        {tab === "rooms" && <RoomsTab layout={layout} setLayout={setLayout} usage={usage} setUsage={setUsage} sessions={sessions} students={students} onSetRoom={setSessionRoom} onPick={setOpen} say={say} />}
+        {tab === "rooms" && <RoomsTab layout={layout} setLayout={setLayout} usage={usage} setUsage={setUsage} sessions={sessions} students={students} onSetRoom={setSessionRoom} onPick={setOpen} say={say} courseName={courseName} />}
         {tab === "form" && <FormPreview say={say} courses={courses} teachers={teachers.filter((t) => t.status === "Active")} onAccept={acceptRegistration} />}
       </main>
 
@@ -689,7 +690,7 @@ function Dashboard({ initial, loadErr }) {
           onClose={() => { setOpen(null); setSchedOpen(false); }}
           onLeave={(course, note) => leave(student.id, course, note)} onChangeDate={changeDate} onDone={markDone} onRenew={(c, disc) => renew(student.id, c, disc)}
           onNote={setSessionNote} onScore={setSessionScore} onReschedule={rescheduleFrom} layout={layout} onSetRoom={setSessionRoom} roomLabelOf={roomLabelOf}
-          onReceipt={(b) => setReceipt({ kind: "in", no: `RC-${(b.date || toInput(today)).replace(/-/g, "")}-${student.id}`, date: b.date || toInput(today), party: `${student.nick} ${student.first || ""} ${student.last || ""}`.trim(), items: [{ label: `${b.course} (${b.total} คาบ)${b.discount ? ` · ลด ${b.discount}%` : ""}`, amount: b.price || 0 }], total: b.price || 0, note: b.teacher ? `ครูผู้สอน: ${b.teacher}` : "" })}
+          onReceipt={(b) => setReceipt({ kind: "in", no: `RC-${(b.date || toInput(today)).replace(/-/g, "")}-${student.id}`, date: b.date || toInput(today), party: `${student.nick} ${student.first || ""} ${student.last || ""}`.trim(), items: [{ label: `${courseName(b.course)} (${b.total} คาบ)${b.discount ? ` · ลด ${b.discount}%` : ""}`, amount: b.price || 0 }], total: b.price || 0, note: b.teacher ? `ครูผู้สอน: ${b.teacher}` : "" })}
           biz={biz} onPayQR={(amount) => setPayQR({ student, amount })} />
       )}
 
@@ -702,7 +703,7 @@ function Dashboard({ initial, loadErr }) {
             <div className="mb-2 text-sm text-slate-600">เวลานี้ครูคนเดียวกันมีคาบอยู่แล้วกับ:</div>
             <ul className="mb-3 max-h-40 space-y-1 overflow-y-auto text-sm">
               {conflict.list.map((c, i) => (
-                <li key={i} className="rounded-lg px-2 py-1" style={{ background: "#FDE8E8", color: "#B42318" }}>{c.name} · {thDate(c.at)} {thTime(c.at)}{c.course ? ` · ${c.course}` : ""}</li>
+                <li key={i} className="rounded-lg px-2 py-1" style={{ background: "#FDE8E8", color: "#B42318" }}>{c.name} · {thDate(c.at)} {thTime(c.at)}{c.course ? ` · ${courseName(c.course)}` : ""}</li>
               ))}
             </ul>
             <div className="flex gap-2">
@@ -739,7 +740,7 @@ const mondayOf = (x) => { const m = new Date(x); const wd = (m.getDay() + 6) % 7
 const toInput = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
 const slotKey = (x) => `${x.getHours()}:${x.getMinutes() < 30 ? "00" : "30"}`;
 
-function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers, roomLabelOf }) {
+function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers, roomLabelOf, courseName }) {
   const [weekStart, setWeekStart] = useState(() => mondayOf(today));
   const [q, setQ] = useState("");
   useEffect(() => { if (jumpTo) setWeekStart(mondayOf(jumpTo)); }, [jumpTo]);
@@ -889,7 +890,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
                               ? { background: "#FDE8E8", color: "#B42318", borderLeft: "3px solid #B42318" }
                               : { background: s.done ? "var(--line-soft)" : "#fff", color: s.done ? "#64748B" : INK, borderLeft: `3px solid ${s.done ? "#94A3B8" : DAY_COLORS[di].head}`, boxShadow: "0 1px 0 rgba(0,0,0,.04)" }}>
                             <div className="font-semibold">{s.student.nick}-{s.student.first}{forfeitedIds.has(s.id) ? " · ส่วนกลาง" : ""}{s.origTeacher ? <span className="ml-1 rounded px-1 text-xs font-normal" style={{ background: "#FFF3D6", color: "#7A4B00" }}>แทน</span> : null}</div>
-                            <div className="text-xs opacity-80">{s.course || s.student.course}{s.total ? ` (${s.n}/${s.total})` : ""}{teacherFilter === "all" || studentFilter !== "all" ? ` · ${s.teacher || s.student.teacher}` : ""}</div>
+                            <div className="text-xs opacity-80">{courseName ? courseName(s.course || s.student.course) : (s.course || s.student.course)}{s.total ? ` (${s.n}/${s.total})` : ""}{teacherFilter === "all" || studentFilter !== "all" ? ` · ${s.teacher || s.student.teacher}` : ""}</div>
                             {roomLabelOf && roomLabelOf(s.room) ? <div className="text-xs font-medium" style={{ color: s.room === "online" ? "#7C3AED" : "#1656D6" }}>{s.room === "online" ? "🌐 " : "📍 "}{roomLabelOf(s.room)}</div> : null}
                           </button>
                         ))}
@@ -909,6 +910,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
 
 // ─── โปรไฟล์นักเรียน ────────────────────────────────────────────
 function Profile({ student, sessions, info, rule, courses, teachers, onRemove, onDeleteSession, onDeleteRemaining, onDeletePurchase, needsSchedule, schedOpen, setSchedOpen, onSchedule, onTeacher, onShowSchedule, onExempt, onForce, onClose, onLeave, onChangeDate, onDone, onRenew, onNote, onScore, onReschedule, onReceipt, layout, onSetRoom, roomLabelOf, biz, onPayQR }) {
+  const cName = (id) => (courses || []).find((c) => c.id === id)?.name || id;
   const [renewOpen, setRenewOpen] = useState(false);
   const [disc, setDisc] = useState(0);
   const [pickDate, setPickDate] = useState(null);
@@ -990,7 +992,7 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
                 return (
                   <button key={c} onClick={() => setActiveCourse(c)} className="shrink-0 rounded-lg px-2.5 py-1 text-left text-xs leading-tight"
                     style={on ? { background: "var(--card)", color: BLUE } : { background: "rgba(255,255,255,.15)", color: "#fff" }}>
-                    <div className="font-semibold">{c}</div>
+                    <div className="font-semibold">{cName(c)}</div>
                     <div style={{ opacity: .8 }}>เหลือ {own.length - dn}/{own.length}</div>
                   </button>
                 );
@@ -1130,7 +1132,7 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
               <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
                 {student.purchases.map((b, i) => (
                   <div key={i} className="flex items-center px-2.5 py-1 text-xs" style={i ? { borderTop: "1px solid var(--line-soft)" } : {}}>
-                    <div className="flex-1"><span className="font-medium">{b.course}</span><span className="text-slate-500"> · {b.date} · {b.teacher} · {b.total} คาบ{b.time ? ` · ${b.time}` : ""}{b.discount ? ` · ลด ${b.discount}%` : ""}</span></div>
+                    <div className="flex-1"><span className="font-medium">{cName(b.course)}</span><span className="text-slate-500"> · {b.date} · {b.teacher} · {b.total} คาบ{b.time ? ` · ${b.time}` : ""}{b.discount ? ` · ลด ${b.discount}%` : ""}</span></div>
                     <div className="font-semibold">{b.price ? baht(b.price) : "-"}</div>
                     <button onClick={() => onPayQR(b.price)} className="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: "#E9F9F0", color: "#1E8E5A" }} title="สร้าง QR รับเงิน">QR</button>
                     <button onClick={() => onReceipt(b)} className="ml-1 rounded px-1.5 py-0.5 text-[11px] font-medium" style={{ background: BLUE_SOFT, color: BLUE }} title="ออกใบเสร็จรับเงิน">ใบเสร็จ</button>
@@ -1141,7 +1143,7 @@ function Profile({ student, sessions, info, rule, courses, teachers, onRemove, o
             </>
           )}
           <div className="mb-1 mt-3 flex items-center justify-between">
-            <h3 className="text-xs font-semibold text-slate-600">ประวัติคาบเรียน · {cur || "ทุกคอร์ส"} ({inCourse.length} คาบ)</h3>
+            <h3 className="text-xs font-semibold text-slate-600">ประวัติคาบเรียน · {cur ? cName(cur) : "ทุกคอร์ส"} ({inCourse.length} คาบ)</h3>
             {inCourse.some((x) => !x.done) && (
               <button onClick={() => { if (window.confirm(`ลบคาบที่ยังไม่เรียนของ ${cur} ทั้งหมด ${inCourse.filter((x) => !x.done).length} คาบ?`)) onDeleteRemaining(cur); }}
                 className="text-xs" style={{ color: "#B42318" }}>ลบคาบที่ยังไม่เรียนทั้งหมด</button>
@@ -1261,6 +1263,7 @@ function SchedulePanel({ student, sessions, courses, teachers, onSubmit, onClose
 
 // ─── หลังบ้าน ────────────────────────────────────────────────────
 function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher, onRemoveTeacher, onUpdateTeacher, pool, rule, setRule, onPick, say, onCleanup, onBackup, onRestore, biz, setBiz, groups, onCreateGroup, onAddMember, onRemoveMember, onDeleteGroup, onReceipt, onPayQR, onApplyState, periodLabelStr }) {
+  const cName = (id) => (courses || []).find((c) => c.id === id)?.name || id;
   const rateOf = (course) => courses.find((c) => c.id === course)?.rate ?? 400;
   const TH_MONTH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
   // รอบบิลปิดวันที่ 25 ของทุกเดือน: งวดถูกตั้งชื่อตามเดือนที่ปิดบิล
@@ -1290,7 +1293,7 @@ function Admin({ students, sessions, courses, setCourses, teachers, onAddTeacher
     const mine = inMonth.filter((s) => s.teacher === t.id);
     const byCourse = {};
     mine.forEach((s) => {
-      const k = (s.course || "(ไม่ระบุคอร์ส)") + (s.cls && s.cls.startsWith("กลุ่ม") ? ` · ${s.cls}` : "");
+      const k = (cName(s.course) || "(ไม่ระบุคอร์ส)") + (s.cls && s.cls.startsWith("กลุ่ม") ? ` · ${s.cls}` : "");
       if (!byCourse[k]) byCourse[k] = { count: 0, rate: rOf(s), pay: 0, items: [] };
       byCourse[k].count += 1; byCourse[k].pay += rOf(s); byCourse[k].items.push(s);
     });
@@ -2020,7 +2023,7 @@ const fileToImg = (file, max = 640) => new Promise((res) => {
   r.readAsDataURL(file);
 });
 
-function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSetRoom, onPick, say }) {
+function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSetRoom, onPick, say, courseName }) {
   const floors = layout.floors || [];
   const [curFloor, setCurFloor] = useState(floors[0]?.id);
   const [mode, setMode] = useState("layout");
@@ -2157,7 +2160,7 @@ function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSe
           daySessions.slice().sort((a, b) => a.at - b.at).map((s) => (
             <div key={s.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid var(--line-soft)" }}>
               <span className="w-12 shrink-0 font-bold">{sTime(s)}</span>
-              <button onClick={() => onPick(s.studentId)} className="min-w-0 flex-1 truncate text-left" style={{ color: INK }}>{roomEmoji(s.course)} {stName(s.studentId)} · {s.course}</button>
+              <button onClick={() => onPick(s.studentId)} className="min-w-0 flex-1 truncate text-left" style={{ color: INK }}>{roomEmoji(s.course)} {stName(s.studentId)} · {courseName ? courseName(s.course) : s.course}</button>
               <select value={s.room || ""} onChange={(e) => onSetRoom(s.id, e.target.value)} className="shrink-0 rounded-lg px-2 py-1 text-xs" style={{ ...inp, maxWidth: "46%" }}>{roomOpts(s.room)}</select>
             </div>
           ))}
@@ -2235,7 +2238,7 @@ function RoomsTab({ layout, setLayout, usage, setUsage, sessions, students, onSe
             {ses.length ? ses.map((s) => (
               <div key={s.id} className="flex items-center gap-2 py-1.5 text-sm" style={{ borderTop: "1px solid var(--line-soft)" }}>
                 <span className="w-12 shrink-0 font-bold">{sTime(s)}</span>
-                <span className="min-w-0 flex-1 truncate">{stName(s.studentId)} · {s.course}</span>
+                <span className="min-w-0 flex-1 truncate">{stName(s.studentId)} · {courseName ? courseName(s.course) : s.course}</span>
                 <select value={s.room || ""} onChange={(e) => onSetRoom(s.id, e.target.value)} className="shrink-0 rounded-lg px-2 py-1 text-xs" style={inp}>{roomOpts(s.room)}</select>
               </div>
             )) : <div className="py-1 text-xs text-slate-400">ไม่มีคาบในห้องนี้</div>}
