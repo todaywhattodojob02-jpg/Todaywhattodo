@@ -71,7 +71,7 @@ export async function loadState() {
     students,
     sessions: sessions.map(revSession),
     courses: cfg?.courses, teachers: cfg?.teachers, rule: cfg?.rule,
-    biz: cfg?.biz, groups: cfg?.groups, layout: cfg?.layout, usage: cfg?.usage,
+    biz: cfg?.biz, groups: cfg?.groups, layout: cfg?.layout, usage: cfg?.usage, trials: cfg?.trials,
   };
 }
 
@@ -83,7 +83,7 @@ export async function saveState(state) {
     return;
   }
   // config (เล็ก) เก็บก้อนเดียว — ไม่รวม students/sessions แล้ว
-  const cfg = { courses: state.courses, teachers: state.teachers, rule: state.rule, biz: state.biz, groups: state.groups, layout: state.layout, usage: state.usage };
+  const cfg = { courses: state.courses, teachers: state.teachers, rule: state.rule, biz: state.biz, groups: state.groups, layout: state.layout, usage: state.usage, trials: state.trials };
   const { error: ec } = await supabase.from("app_state").upsert({ id: "main", data: cfg, updated_at: new Date().toISOString() });
   if (ec) throw ec;
 

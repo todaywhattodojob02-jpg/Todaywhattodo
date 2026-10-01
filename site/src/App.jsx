@@ -231,6 +231,7 @@ function Dashboard({ initial, loadErr }) {
   const [groups, setGroups] = useState(initial?.groups || []);
   const [layout, setLayout] = useState(initial?.layout || { floors: [{ id: "f1", name: "ชั้น 1", rooms: [] }, { id: "f2", name: "ชั้น 2", rooms: [] }, { id: "f3", name: "ชั้น 3", rooms: [] }] });
   const [usage, setUsage] = useState(initial?.usage || []);
+  const [trials, setTrials] = useState(initial?.trials || []); // คาบทดลองเรียน (แยกจากนักเรียน)
   const [receipt, setReceipt] = useState(null); // ใบเสร็จที่กำลังเปิด
   const [payQR, setPayQR] = useState(null); // { student, amount }
   const [dark, setDark] = useState(() => (typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "dark"));
@@ -287,6 +288,8 @@ function Dashboard({ initial, loadErr }) {
     }));
     say(`เปลี่ยนครูสอนคาบนี้เป็น ${teacher}`);
   };
+  const addTrial = (t) => { const id = "t" + Date.now(); setTrials((all) => [...all, { id, name: t.name, contact: t.contact || "", teacher: t.teacher || "", at: new Date(`${t.date}T${t.time || "18:00"}:00`), note: t.note || "" }]); say(`เพิ่มคาบทดลองเรียน: ${t.name}`); };
+  const deleteTrial = (id) => { setTrials((all) => all.filter((x) => x.id !== id)); say("ลบคาบทดลองแล้ว"); };
   const setSessionRoom = (sessionId, room) => setSessions((all) => all.map((x) => (x.id === sessionId ? { ...x, room: room || undefined } : x)));
   const roomNameById = useMemo(() => { const m = {}; (layout.floors || []).forEach((f) => f.rooms.forEach((r) => { m[r.id] = r.name; })); return m; }, [layout]);
   const roomLabelOf = (room) => room === "online" ? "ออนไลน์" : (room && roomNameById[room]) ? roomNameById[room] : "";
@@ -354,7 +357,7 @@ function Dashboard({ initial, loadErr }) {
   // สำรอง/กู้คืนไฟล์ + สำรองอัตโนมัติวันละครั้ง
   const exportBackup = () => {
     try {
-      const payload = JSON.stringify(serialize({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage }));
+      const payload = JSON.stringify(serialize({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage, trials }));
       const blob = new Blob([payload], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -378,6 +381,7 @@ function Dashboard({ initial, loadErr }) {
         if (parsed.groups) setGroups(parsed.groups);
         if (parsed.layout) setLayout(parsed.layout);
         if (parsed.usage) setUsage(parsed.usage);
+        if (parsed.trials) setTrials(parsed.trials);
         say("กู้คืนข้อมูลจากไฟล์แล้ว");
       } catch (e) { say("ไฟล์สำรองไม่ถูกต้อง: " + (e.message || e)); }
     };
@@ -406,6 +410,7 @@ function Dashboard({ initial, loadErr }) {
     if (parsed.groups) setGroups(parsed.groups);
     if (parsed.layout) setLayout(parsed.layout);
     if (parsed.usage) setUsage(parsed.usage);
+    if (parsed.trials) setTrials(parsed.trials);
   };
 
   // Realtime: เครื่องอื่นแก้แล้วเห็นทันที (กันข้อมูลชนกัน)
@@ -424,7 +429,7 @@ function Dashboard({ initial, loadErr }) {
       const k = "twt-last-snapshot";
       const t = toInput(new Date());
       if (localStorage.getItem(k) !== t && (rawStudents.length || sessions.length)) {
-        pushSnapshot({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage })
+        pushSnapshot({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage, trials })
           .then(() => localStorage.setItem(k, t)).catch(() => {});
       }
     } catch (e) { /* ignore */ }
@@ -440,19 +445,21 @@ function Dashboard({ initial, loadErr }) {
 
   // ใช้ธีมสีที่เลือก (จากคลาวด์/เครื่อง) + รีเฟรชตอนสลับสว่าง-มืด
   useEffect(() => { applyAccent(biz.accent || (typeof localStorage !== "undefined" && localStorage.getItem("twt-accent")) || "blue", dark); }, [biz.accent, dark]);
+  // คาบทดลองเรียนที่เลยวันไปแล้วเกิน 1 วัน ลบทิ้งอัตโนมัติ (ให้หายไปเอง)
+  useEffect(() => { const cut = new Date(today); cut.setDate(cut.getDate() - 1); setTrials((all) => all.filter((t) => new Date(t.at) >= cut)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   // บันทึกอัตโนมัติทุกครั้งที่ข้อมูลเปลี่ยน (หน่วง 0.8 วิ)
   useEffect(() => {
     if (firstRun.current) { firstRun.current = false; return; }
     setSaveStatus("saving");
     const t = setTimeout(() => {
-      saveState({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage })
+      saveState({ students: rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage, trials })
         .then(() => setSaveStatus("saved"))
         .catch((e) => { console.error(e); setSaveStatus("error"); });
       savePayConfig({ qrUrl: biz.qrImgUrl || "", promptpay: biz.promptpay || "", bankInfo: biz.bankInfo || "" }).catch(() => {});
     }, 800);
     return () => clearTimeout(t);
-  }, [rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage]);
+  }, [rawStudents, sessions, courses, teachers, rule, biz, groups, layout, usage, trials]);
 
   const pool = useMemo(() => {
     const m = new Map();
@@ -666,7 +673,7 @@ function Dashboard({ initial, loadErr }) {
           <WeekGrid sessions={sessions} students={students} forfeitedIds={forfeitedIds}
             teacherFilter={teacherFilter} setTeacherFilter={setTeacherFilter}
             studentFilter={studentFilter} setStudentFilter={setStudentFilter}
-            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} roomLabelOf={roomLabelOf} courseName={courseName} />
+            jumpTo={jumpTo} onPick={setOpen} needSchedule={needSchedule} onSchedule={openWithSchedule} teachers={teachers.filter((t) => t.status === "Active")} roomLabelOf={roomLabelOf} courseName={courseName} trials={trials} onAddTrial={addTrial} onDeleteTrial={deleteTrial} />
         )}
 
         {tab === "students" && (
@@ -740,7 +747,7 @@ const mondayOf = (x) => { const m = new Date(x); const wd = (m.getDay() + 6) % 7
 const toInput = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
 const slotKey = (x) => `${x.getHours()}:${x.getMinutes() < 30 ? "00" : "30"}`;
 
-function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers, roomLabelOf, courseName }) {
+function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherFilter, studentFilter, setStudentFilter, jumpTo, onPick, needSchedule, onSchedule, teachers, roomLabelOf, courseName, trials, onAddTrial, onDeleteTrial }) {
   const [weekStart, setWeekStart] = useState(() => mondayOf(today));
   const [q, setQ] = useState("");
   useEffect(() => { if (jumpTo) setWeekStart(mondayOf(jumpTo)); }, [jumpTo]);
@@ -773,6 +780,21 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
     return m;
   }, [sessions, students, teacherFilter, studentFilter, weekStart]);
 
+  const trialCell = useMemo(() => {
+    const m = new Map();
+    (trials || []).forEach((t) => {
+      const at = new Date(t.at);
+      if (at < weekStart || at >= weekEnd) return;
+      if (studentFilter !== "all") return; // คาบทดลองไม่ผูกนักเรียน
+      if (teacherFilter !== "all" && t.teacher !== teacherFilter) return;
+      const k = `${(at.getDay() + 6) % 7}|${slotKey(at)}`;
+      m.set(k, [...(m.get(k) || []), { ...t, _at: at }]);
+    });
+    return m;
+  }, [trials, teacherFilter, studentFilter, weekStart]);
+  const [trialForm, setTrialForm] = useState(null);
+  const T_TIMES = []; for (let h = 8; h <= 22; h++) { T_TIMES.push(`${String(h).padStart(2, "0")}:00`); T_TIMES.push(`${String(h).padStart(2, "0")}:30`); }
+
   const shift = (n) => setWeekStart((w) => { const x = new Date(w); x.setDate(x.getDate() + 7 * n); return x; });
   const isToday = (x) => x.toDateString() === today.toDateString();
   const fmt = (x) => x.toLocaleDateString("th-TH", { day: "numeric", month: "short" });
@@ -802,6 +824,30 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
         <button onClick={() => setWeekStart(mondayOf(today))} className="rounded-xl bg-white px-3 py-2 text-sm font-medium" style={{ border: "1px solid var(--line)", color: BLUE }}>สัปดาห์นี้</button>
         <button onClick={() => { const last = [...sessions].sort((a, b) => b.at - a.at)[0]; if (last) setWeekStart(mondayOf(last.at)); }}
           className="rounded-xl bg-white px-3 py-2 text-sm font-medium" style={{ border: "1px solid var(--line)", color: BLUE }}>คาบล่าสุดในชีต</button>
+        <button onClick={() => setTrialForm({ name: "", contact: "", teacher: teachers[0]?.id || "", date: toInput(today), time: "18:00", note: "" })}
+          className="rounded-xl px-3 py-2 text-sm font-semibold text-white" style={{ background: "#E8590C" }}>+ ทดลองเรียน</button>
+        {trialForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" onClick={() => setTrialForm(null)}>
+            <div className="w-full max-w-sm rounded-2xl bg-white p-4" style={{ color: INK }} onClick={(e) => e.stopPropagation()}>
+              <div className="mb-1 text-base font-bold" style={{ color: "#E8590C" }}>เพิ่มคาบทดลองเรียน</div>
+              <div className="mb-2 text-xs text-slate-500">คาบเดียว แยกจากนักเรียนจริง · เลยวันแล้วหายเอง</div>
+              <div className="space-y-2">
+                <label className="block text-xs text-slate-500">ชื่อผู้มาทดลอง *<input value={trialForm.name} onChange={(e) => setTrialForm({ ...trialForm, name: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} /></label>
+                <label className="block text-xs text-slate-500">ติดต่อ (LINE/เบอร์)<input value={trialForm.contact} onChange={(e) => setTrialForm({ ...trialForm, contact: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} /></label>
+                <div className="flex gap-2">
+                  <label className="block flex-1 text-xs text-slate-500">ครู<select value={trialForm.teacher} onChange={(e) => setTrialForm({ ...trialForm, teacher: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }}>{teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+                  <label className="block text-xs text-slate-500">เวลา<select value={trialForm.time} onChange={(e) => setTrialForm({ ...trialForm, time: e.target.value })} className="mt-0.5 rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }}>{T_TIMES.map((t) => <option key={t} value={t}>{t}</option>)}</select></label>
+                </div>
+                <label className="block text-xs text-slate-500">วันที่<input type="date" value={trialForm.date} onChange={(e) => setTrialForm({ ...trialForm, date: e.target.value })} className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} /></label>
+                <label className="block text-xs text-slate-500">โน้ต<input value={trialForm.note} onChange={(e) => setTrialForm({ ...trialForm, note: e.target.value })} placeholder="สนใจคอร์สไหน ฯลฯ" className="mt-0.5 w-full rounded-lg px-2 py-1.5 text-sm" style={{ ...font, border: "1px solid var(--line)" }} /></label>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button onClick={() => { if (!trialForm.name.trim()) return; onAddTrial(trialForm); setWeekStart(mondayOf(new Date(trialForm.date + "T00:00:00"))); setTrialForm(null); }} className="flex-1 rounded-lg py-2 text-sm font-semibold text-white" style={{ background: "#E8590C" }}>เพิ่มคาบทดลอง</button>
+                <button onClick={() => setTrialForm(null)} className="rounded-lg px-4 py-2 text-sm" style={{ background: "#fff", color: INK, border: "1px solid var(--line)" }}>ยกเลิก</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <select value={teacherFilter} onChange={(e) => setTeacherFilter(e.target.value)}
           className="rounded-xl bg-white px-3 py-2 text-sm font-medium" style={{ ...font, border: "1px solid var(--line)" }}>
@@ -881,9 +927,17 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
                   </td>
                   {days.map((x, di) => {
                     const items = cell.get(`${di}|${slot}`) || [];
+                    const tItems = trialCell.get(`${di}|${slot}`) || [];
                     return (
                       <td key={di} className="px-1 py-0.5 align-top" style={{ borderLeft: "1px solid var(--line-soft)", background: DAY_COLORS[di].tint, height: 34 }}>
-                        {items.length === 0 ? <span className="block text-center text-slate-300">-</span> : items.map((s) => (
+                        {items.length === 0 && tItems.length === 0 ? <span className="block text-center text-slate-300">-</span> : <>{tItems.map((t) => (
+                          <button key={t.id} onClick={() => { if (window.confirm(`ลบคาบทดลองของ ${t.name}?`)) onDeleteTrial(t.id); }}
+                            className="mb-0.5 block w-full rounded-lg px-2 py-1 text-left leading-tight"
+                            style={{ background: "#FFF3E6", color: "#9A3412", border: "1px dashed #E8590C" }}>
+                            <div className="font-semibold">ทดลองเรียน · {t.name}</div>
+                            <div className="text-xs opacity-80">{t.teacher}{t.note ? ` · ${t.note}` : ""}</div>
+                          </button>
+                        ))}{items.map((s) => (
                           <button key={s.id} onClick={() => onPick(s.studentId)}
                             className="mb-0.5 block w-full rounded-lg px-2 py-1 text-left leading-tight"
                             style={forfeitedIds.has(s.id)
@@ -893,7 +947,7 @@ function WeekGrid({ sessions, students, forfeitedIds, teacherFilter, setTeacherF
                             <div className="text-xs opacity-80">{courseName ? courseName(s.course || s.student.course) : (s.course || s.student.course)}{s.total ? ` (${s.n}/${s.total})` : ""}{teacherFilter === "all" || studentFilter !== "all" ? ` · ${s.teacher || s.student.teacher}` : ""}</div>
                             {roomLabelOf && roomLabelOf(s.room) ? <div className="text-xs font-medium" style={{ color: s.room === "online" ? "#7C3AED" : "#1656D6" }}>{s.room === "online" ? "🌐 " : "📍 "}{roomLabelOf(s.room)}</div> : null}
                           </button>
-                        ))}
+                        ))}</>}
                       </td>
                     );
                   })}
